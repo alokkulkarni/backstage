@@ -1,0 +1,23 @@
+{
+  "name": "Catalog Read Access",
+  "description": "Grant read access to catalog entities",
+  "category": "catalog",
+  "template": {
+    "name": "Catalog Read - {{subject}}",
+    "description": "Read access to catalog for {{subject}}",
+    "resource": "catalog",
+    "actions": [
+      "read"
+    ],
+    "effect": "allow"
+  },
+  "variables": [
+    {
+      "name": "subject",
+      "description": "User or group to grant access to",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "id": "79e8cdf4-ed7e-4221-890a-833f14954a4b"
+}

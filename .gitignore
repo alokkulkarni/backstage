@@ -29,6 +29,7 @@ node_modules/
 
 # dotenv environment variables file
 .env
+.env.local
 .env.test
 
 # Build output
@@ -52,3 +53,10 @@ site
 
 # E2E test reports
 e2e-test-report/
+
+.vscode-test/
+# Local development files
+.vscode/
+# Local development files
+.env.local
+

@@ -1,0 +1,589 @@
+pipeline {
+    agent any
+    
+    environment {
+        JAVA_VERSION = '${{ values.javaVersion }}'
+        MAVEN_OPTS = '-Xmx2048m -Xms512m'
+        SONAR_SCANNER_VERSION = '4.8.0.2856'
+    }
+    
+    tools {
+        maven 'Maven-3.9'
+        jdk "JDK-${JAVA_VERSION}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        string(name: 'GIT_REPO_URL', defaultValue: '${{ values.destination.owner }}/${{ values.destination.repo }}', description: 'Git repository URL')
+        choice(name: 'ANALYSIS_TYPE', choices: ['full', 'incremental', 'security-only'], description: 'Type of analysis to run')
+        booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: true, description: 'Fail build if quality gate fails')
+        string(name: 'SONAR_PROJECT_KEY', defaultValue: '${{ values.sonarProjectKey }}', description: 'SonarQube project key')
+        choice(name: 'MAVEN_PROFILE', choices: ['default', 'quality', 'coverage'], description: 'Maven profile for quality analysis')
+        booleanParam(name: 'RUN_MUTATION_TESTS', defaultValue: false, description: 'Run PITest mutation testing')
+        booleanParam(name: 'GENERATE_REPORTS', defaultValue: true, description: 'Generate comprehensive quality reports')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "🔍 Starting quality analysis for Spring Boot service: ${{ values.name }}"
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "${env.BRANCH_NAME ?: 'main'}"]],
+                    userRemoteConfigs: [[url: "${params.GIT_REPO_URL}"]]
+                ])
+                
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Setup Environment') {
+            steps {
+                echo "🔧 Setting up quality analysis environment"
+                sh '''
+                    echo "Java Version: $(java -version)"
+                    echo "Maven Version: $(mvn -version)"
+                    echo "Analysis Type: ${ANALYSIS_TYPE}"
+                    echo "Maven Profile: ${MAVEN_PROFILE}"
+                    
+                    # Create reports directory
+                    mkdir -p reports/{spotbugs,checkstyle,pmd,dependency-check,mutation}
+                '''
+            }
+        }
+        
+        stage('Compile & Validate') {
+            steps {
+                echo "🏗️ Compiling and validating project"
+                script {
+                    def mavenProfile = params.MAVEN_PROFILE != 'default' ? "-P${params.MAVEN_PROFILE}" : ''
+                    sh """
+                        mvn clean compile test-compile ${mavenProfile}
+                        mvn validate dependency:resolve dependency:resolve-sources
+                    """
+                }
+            }
+        }
+        
+        stage('Code Quality Analysis') {
+            parallel {
+                stage('Checkstyle Analysis') {
+                    steps {
+                        echo "📋 Running Checkstyle analysis"
+                        sh '''
+                            mvn checkstyle:checkstyle || true
+                            
+                            # Copy reports to central location
+                            cp target/site/checkstyle.html reports/checkstyle/ 2>/dev/null || true
+                            cp target/checkstyle-result.xml reports/checkstyle/ 2>/dev/null || true
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site',
+                                reportFiles: 'checkstyle.html',
+                                reportName: 'Checkstyle Report'
+                            ])
+                            
+                            recordIssues(
+                                enabledForFailure: false,
+                                tools: [checkStyle(pattern: 'target/checkstyle-result.xml')]
+                            )
+                        }
+                    }
+                }
+                
+                stage('PMD Analysis') {
+                    steps {
+                        echo "🔍 Running PMD static analysis"
+                        sh '''
+                            mvn pmd:pmd pmd:cpd || true
+                            
+                            # Copy reports
+                            cp target/site/pmd.html reports/pmd/ 2>/dev/null || true
+                            cp target/pmd.xml reports/pmd/ 2>/dev/null || true
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site',
+                                reportFiles: 'pmd.html',
+                                reportName: 'PMD Report'
+                            ])
+                            
+                            recordIssues(
+                                enabledForFailure: false,
+                                tools: [pmdParser(pattern: 'target/pmd.xml')]
+                            )
+                        }
+                    }
+                }
+                
+                stage('SpotBugs Analysis') {
+                    steps {
+                        echo "🐛 Running SpotBugs analysis"
+                        sh '''
+                            mvn spotbugs:spotbugs || true
+                            
+                            # Copy reports
+                            cp target/site/spotbugs.html reports/spotbugs/ 2>/dev/null || true
+                            cp target/spotbugsXml.xml reports/spotbugs/ 2>/dev/null || true
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site',
+                                reportFiles: 'spotbugs.html',
+                                reportName: 'SpotBugs Report'
+                            ])
+                            
+                            recordIssues(
+                                enabledForFailure: false,
+                                tools: [spotBugs(pattern: 'target/spotbugsXml.xml')]
+                            )
+                        }
+                    }
+                }
+                
+                stage('Dependency Analysis') {
+                    steps {
+                        echo "📦 Analyzing dependencies"
+                        sh '''
+                            # Maven dependency analysis
+                            mvn dependency:analyze > reports/dependency-analysis.txt 2>&1 || true
+                            
+                            # Check for outdated dependencies
+                            mvn versions:display-dependency-updates > reports/dependency-updates.txt 2>&1 || true
+                            mvn versions:display-plugin-updates > reports/plugin-updates.txt 2>&1 || true
+                            
+                            # License analysis
+                            mvn license:aggregate-third-party-report || true
+                            cp target/site/aggregate-third-party-report.html reports/ 2>/dev/null || true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Security Analysis') {
+            parallel {
+                stage('OWASP Dependency Check') {
+                    steps {
+                        echo "🔒 Running OWASP dependency vulnerability scan"
+                        sh '''
+                            mvn org.owasp:dependency-check-maven:check || true
+                            
+                            # Copy security reports
+                            cp target/dependency-check-report.html reports/dependency-check/ 2>/dev/null || true
+                            cp target/dependency-check-report.xml reports/dependency-check/ 2>/dev/null || true
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target',
+                                reportFiles: 'dependency-check-report.html',
+                                reportName: 'OWASP Dependency Check'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Snyk Security Scan') {
+                    steps {
+                        echo "🛡️ Running Snyk security scan"
+                        sh '''
+                            # Run Snyk if available
+                            if command -v snyk >/dev/null 2>&1; then
+                                snyk test --json > reports/snyk-report.json || true
+                                snyk monitor --json > reports/snyk-monitor.json || true
+                            else
+                                echo "Snyk not available - install for enhanced security scanning"
+                            fi
+                        '''
+                    }
+                }
+                
+                stage('Maven Security Audit') {
+                    steps {
+                        echo "🔐 Running Maven security audit"
+                        sh '''
+                            # Check for known vulnerabilities in Maven plugins
+                            mvn org.sonatype.ossindex.maven:ossindex-maven-plugin:audit || true
+                            
+                            # Generate security report
+                            cat > reports/security-summary.md << EOF
+                            # Security Analysis Summary
+
+                            ## OWASP Dependency Check
+                            - Report: dependency-check-report.html
+                            - XML: dependency-check-report.xml
+
+                            ## Maven Dependency Analysis
+                            - Analysis: dependency-analysis.txt
+                            - Updates: dependency-updates.txt
+
+                            ## Third-party Licenses
+                            - Report: aggregate-third-party-report.html
+
+                            EOF
+                            echo "Security analysis completed. Check reports for details."
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Test Coverage Analysis') {
+            steps {
+                echo "📈 Running comprehensive test coverage analysis"
+                sh '''
+                    # Run tests with JaCoCo coverage
+                    mvn test jacoco:report || true
+                    
+                    # Integration test coverage
+                    mvn failsafe:integration-test failsafe:verify jacoco:report-integration || true
+                    
+                    # Aggregate coverage report
+                    mvn jacoco:merge jacoco:report-aggregate || true
+                    
+                    # Copy coverage reports
+                    cp -r target/site/jacoco reports/ 2>/dev/null || true
+                    cp target/site/jacoco/jacoco.xml reports/ 2>/dev/null || true
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target/site/jacoco',
+                        reportFiles: 'index.html',
+                        reportName: 'JaCoCo Coverage Report'
+                    ])
+                    
+                    publishCoverage adapters: [
+                        jacocoAdapter('target/site/jacoco/jacoco.xml')
+                    ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                }
+            }
+        }
+        
+        stage('Mutation Testing') {
+            when {
+                expression { return params.RUN_MUTATION_TESTS }
+            }
+            steps {
+                echo "🧬 Running PITest mutation testing"
+                sh '''
+                    mvn org.pitest:pitest-maven:mutationCoverage || true
+                    
+                    # Copy mutation test reports
+                    cp -r target/pit-reports reports/mutation/ 2>/dev/null || true
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target/pit-reports',
+                        reportFiles: '*/index.html',
+                        reportName: 'PITest Mutation Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            environment {
+                SONAR_TOKEN = credentials('sonarqube-token')
+            }
+            when {
+                anyOf {
+                    expression { return params.ANALYSIS_TYPE == 'full' }
+                    expression { return params.ANALYSIS_TYPE == 'incremental' }
+                }
+            }
+            steps {
+                script {
+                    echo "📊 Running SonarQube analysis"
+                    
+                    def sonarParams = [
+                        "-Dsonar.projectKey=${params.SONAR_PROJECT_KEY}",
+                        "-Dsonar.projectName=${{ values.name }}",
+                        "-Dsonar.projectVersion=${env.BUILD_NUMBER}",
+                        "-Dsonar.sources=src/main/java",
+                        "-Dsonar.tests=src/test/java",
+                        "-Dsonar.java.binaries=target/classes",
+                        "-Dsonar.java.test.binaries=target/test-classes",
+                        "-Dsonar.java.libraries=target/dependency/*.jar",
+                        "-Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml",
+                        "-Dsonar.junit.reportPaths=target/surefire-reports,target/failsafe-reports"
+                    ]
+                    
+                    // Add incremental analysis parameters if needed
+                    if (params.ANALYSIS_TYPE == 'incremental' && env.CHANGE_ID) {
+                        sonarParams.addAll([
+                            "-Dsonar.pullrequest.key=${env.CHANGE_ID}",
+                            "-Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}",
+                            "-Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
+                        ])
+                    }
+                    
+                    sh """
+                        mvn sonar:sonar ${sonarParams.join(' ')}
+                    """
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            when {
+                expression { return params.FAIL_ON_QUALITY_GATE }
+            }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    echo "⏳ Waiting for SonarQube Quality Gate"
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Quality Gate failed: ${qg.status}"
+                        } else {
+                            echo "✅ Quality Gate passed!"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Architecture Analysis') {
+            steps {
+                echo "🏗️ Running architecture analysis"
+                sh '''
+                    # ArchUnit tests (if available)
+                    mvn test -Dtest="*ArchTest" || echo "No ArchUnit tests found"
+                    
+                    # Dependency analysis for circular dependencies
+                    mvn dependency:analyze-duplicate || true
+                    mvn dependency:analyze-dep-mgt || true
+                    
+                    # Generate architecture documentation
+                    mkdir -p reports/architecture
+                    
+                    echo "# Architecture Analysis" > reports/architecture/README.md
+                    echo "" >> reports/architecture/README.md
+                    echo "## Package Structure" >> reports/architecture/README.md
+                    find src/main/java -name "*.java" | head -20 | xargs dirname | sort | uniq >> reports/architecture/README.md
+                    
+                    echo "" >> reports/architecture/README.md
+                    echo "## Dependencies" >> reports/architecture/README.md
+                    mvn dependency:tree | head -50 >> reports/architecture/README.md
+                '''
+            }
+        }
+        
+        stage('Performance Analysis') {
+            steps {
+                echo "⚡ Running performance analysis"
+                sh '''
+                    mkdir -p reports/performance
+                    
+                    # JVM analysis
+                    echo "# Performance Analysis" > reports/performance/analysis.md
+                    echo "" >> reports/performance/analysis.md
+                    echo "## JAR File Analysis" >> reports/performance/analysis.md
+                    
+                    if [ -f target/*.jar ]; then
+                        JAR_FILE=$(find target -name "*.jar" -not -name "*-sources.jar" | head -1)
+                        echo "JAR Size: $(du -h $JAR_FILE)" >> reports/performance/analysis.md
+                        echo "JAR Contents:" >> reports/performance/analysis.md
+                        jar tf $JAR_FILE | head -20 >> reports/performance/analysis.md
+                    fi
+                    
+                    # Memory usage analysis during tests
+                    echo "" >> reports/performance/analysis.md
+                    echo "## Memory Usage During Tests" >> reports/performance/analysis.md
+                    echo "Maven Opts: $MAVEN_OPTS" >> reports/performance/analysis.md
+                    
+                    # Startup time analysis (if Spring Boot)
+                    if grep -q "spring-boot" pom.xml; then
+                        echo "Spring Boot application detected" >> reports/performance/analysis.md
+                        
+                        # Analyze startup classes
+                        grep -r "@SpringBootApplication" src/main/java | head -5 >> reports/performance/analysis.md || true
+                        grep -r "@Component\|@Service\|@Repository\|@Controller" src/main/java | wc -l > reports/performance/component-count.txt
+                        echo "Component count: $(cat reports/performance/component-count.txt)" >> reports/performance/analysis.md
+                    fi
+                '''
+            }
+        }
+        
+        stage('Generate Quality Dashboard') {
+            when {
+                expression { return params.GENERATE_REPORTS }
+            }
+            steps {
+                echo "📊 Generating comprehensive quality dashboard"
+                sh '''
+                    mkdir -p reports/dashboard
+                    
+                    cat > reports/dashboard/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>${{ values.name }} - Quality Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background: #f4f4f4; padding: 20px; border-radius: 5px; }
+        .metrics { display: flex; flex-wrap: wrap; gap: 20px; margin: 20px 0; }
+        .metric { background: #fff; border: 1px solid #ddd; padding: 15px; border-radius: 5px; min-width: 200px; }
+        .metric h3 { margin: 0 0 10px 0; color: #333; }
+        .metric .value { font-size: 24px; font-weight: bold; color: #007acc; }
+        .links { margin: 20px 0; }
+        .links a { display: inline-block; margin: 5px 10px 5px 0; padding: 10px 15px; background: #007acc; color: white; text-decoration: none; border-radius: 3px; }
+        .links a:hover { background: #005a9e; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>${{ values.name }} - Quality Analysis Dashboard</h1>
+        <p>Build: #${BUILD_NUMBER} | Commit: ${GIT_COMMIT_SHORT} | Generated: $(date)</p>
+    </div>
+    
+    <div class="metrics">
+        <div class="metric">
+            <h3>Test Coverage</h3>
+            <div class="value">View Report</div>
+        </div>
+        <div class="metric">
+            <h3>Code Quality</h3>
+            <div class="value">SonarQube</div>
+        </div>
+        <div class="metric">
+            <h3>Security</h3>
+            <div class="value">OWASP</div>
+        </div>
+        <div class="metric">
+            <h3>Dependencies</h3>
+            <div class="value">Analyzed</div>
+        </div>
+    </div>
+    
+    <div class="links">
+        <h2>Quality Reports</h2>
+        <a href="../jacoco/index.html">Test Coverage</a>
+        <a href="../checkstyle/checkstyle.html">Checkstyle</a>
+        <a href="../spotbugs/spotbugs.html">SpotBugs</a>
+        <a href="../dependency-check/dependency-check-report.html">Security Scan</a>
+        <a href="../architecture/README.md">Architecture</a>
+        <a href="../performance/analysis.md">Performance</a>
+    </div>
+    
+    <div class="footer">
+        <p>Generated by Jenkins Pipeline | ${{ values.name }} Quality Analysis</p>
+    </div>
+</body>
+</html>
+EOF
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'reports/dashboard',
+                        reportFiles: 'index.html',
+                        reportName: 'Quality Dashboard'
+                    ])
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "📋 Archiving quality analysis artifacts"
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+        }
+        
+        success {
+            echo "✅ Quality analysis completed successfully!"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#quality-gates',
+                        color: 'good',
+                        message: ":white_check_mark: *${{ values.name }}* quality analysis passed\\n" +
+                                "Build: #${env.BUILD_NUMBER}\\n" +
+                                "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                                "Analysis: ${params.ANALYSIS_TYPE}\\n" +
+                                "Reports: ${env.BUILD_URL}Quality_20Dashboard/"
+                    )
+                }
+            }
+        }
+        
+        failure {
+            echo "❌ Quality analysis failed!"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#quality-gates',
+                        color: 'danger',
+                        message: ":x: *${{ values.name }}* quality analysis failed\\n" +
+                                "Build: #${env.BUILD_NUMBER}\\n" +
+                                "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                                "Check: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+        
+        unstable {
+            echo "⚠️ Quality analysis is unstable"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#quality-gates',
+                        color: 'warning',
+                        message: ":warning: *${{ values.name }}* quality analysis is unstable\\n" +
+                                "Build: #${env.BUILD_NUMBER}\\n" +
+                                "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                                "Review: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+    }
+}

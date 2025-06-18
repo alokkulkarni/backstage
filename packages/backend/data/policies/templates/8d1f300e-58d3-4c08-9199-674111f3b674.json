@@ -1,0 +1,49 @@
+{
+  "name": "Guest Read-Only Access Template",
+  "description": "Template for creating read-only access policies for guest users",
+  "category": "security",
+  "variables": [
+    {
+      "name": "resource",
+      "description": "The resource to grant read access to",
+      "type": "string",
+      "required": true,
+      "defaultValue": "catalog.entity",
+      "options": [
+        "catalog.entity",
+        "catalog.location",
+        "techdocs.doc",
+        "scaffolder.template",
+        "search"
+      ]
+    }
+  ],
+  "template": {
+    "name": "Guest {{resource}} Read Access",
+    "description": "Provides read-only access to {{resource}} for guest users",
+    "resource": "{{resource}}",
+    "actions": [
+      "read"
+    ],
+    "effect": "allow",
+    "conditions": [
+      {
+        "field": "user.identity.userEntityRef",
+        "operator": "in",
+        "value": [
+          "user:guest",
+          "user:default/guest"
+        ]
+      }
+    ],
+    "metadata": {
+      "priority": 100,
+      "category": "guest-access",
+      "tags": [
+        "guest",
+        "read-only"
+      ]
+    }
+  },
+  "id": "8d1f300e-58d3-4c08-9199-674111f3b674"
+}

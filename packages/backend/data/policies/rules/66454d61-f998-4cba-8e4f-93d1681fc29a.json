@@ -1,0 +1,41 @@
+{
+  "id": "66454d61-f998-4cba-8e4f-93d1681fc29a",
+  "name": "Guest Deny Admin Access",
+  "description": "Deny guest users access to administrative functions",
+  "resource": "admin*",
+  "actions": [
+    "*"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "admin",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.108Z",
+    "updatedAt": "2025-06-13T15:23:09.108Z"
+  }
+}

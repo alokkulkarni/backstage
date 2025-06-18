@@ -1,0 +1,42 @@
+{
+  "id": "eefd6388-7280-497a-a53a-efcd648ceed0",
+  "name": "Guest Search Access",
+  "description": "Allow guest users to search and query",
+  "resource": "search",
+  "actions": [
+    "query",
+    "read"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 100,
+    "category": "guest-access",
+    "tags": [
+      "guest",
+      "search",
+      "read-only"
+    ],
+    "createdAt": "2025-06-13T15:23:09.105Z",
+    "updatedAt": "2025-06-13T15:23:09.105Z"
+  }
+}

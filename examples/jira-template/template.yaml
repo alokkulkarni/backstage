@@ -1,0 +1,101 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: jira-metadata-annotations
+  title: Add Jira Metadata Annotations
+  description: Add Jira metadata annotations to a component's catalog-info.yaml file
+  tags:
+    - jira
+    - metadata
+    - annotations
+    - recommended
+spec:
+  owner: user:alokkulkarni
+  type: service
+
+  parameters:
+    - title: Provide Jira Information
+      required:
+        - componentPath
+        - projectKey
+      properties:
+        componentPath:
+          title: Component Path
+          type: string
+          description: Relative path to the component's directory containing the catalog-info.yaml file
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+        projectKey:
+          title: Jira Project Key
+          type: string
+          description: The Jira project key (e.g., PROJ, ENG, PLATFORM)
+          ui:autofocus: true
+        component:
+          title: Jira Component (Optional)
+          type: string
+          description: The name of the Jira component in the project (leave empty to fetch data for all components)
+        tokenType:
+          title: Token Type (Optional)
+          type: string
+          description: "Auth token type, used for Activity stream feed (e.g., Bearer)"
+          default: "Bearer"
+          enum:
+            - "Bearer"
+            - "Basic"
+        label:
+          title: Jira Label (Optional)
+          type: string
+          description: Refine filter based on a label or labels (comma-separated values)
+        allIssuesJql:
+          title: JQL for All Issues (Optional)
+          type: string
+          description: JQL query used by EntityJiraQueryCard, supports templating with annotations and user profile data
+          default: "project = '${project}' AND assignee = '{{ userEmail }}' ORDER BY updated DESC"
+
+  steps:
+    - id: fetch-component
+      name: Fetch Component Info
+      action: catalog:fetch
+      input:
+        entityRef: ${{ parameters.componentPath }}
+        
+    - id: fetch-catalog-info
+      name: Read Catalog Info File
+      action: backstage:fetch-catalog-info
+      input:
+        path: ${{ steps['fetch-component'].output.targetPath }}
+        
+    - id: update-catalog-info
+      name: Update Catalog Info with Jira Annotations
+      action: fs:update-catalog-info
+      input:
+        path: ${{ steps['fetch-component'].output.targetPath }}
+        annotations:
+          jira/project-key: ${{ parameters.projectKey }}
+          jira/component: ${{ parameters.component }}
+          jira/token-type: ${{ parameters.tokenType }}
+          jira/label: ${{ parameters.label }}
+          jira/all-issues-jql: ${{ parameters.allIssuesJql }}
+          
+    - id: create-pull-request
+      name: Create Pull Request
+      action: publish:github:pull-request
+      input:
+        repoUrl: ${{ parameters.componentPath }}
+        branchName: add-jira-annotations
+        title: Add Jira metadata annotations
+        description: |
+          This PR adds Jira metadata annotations to the catalog-info.yaml file.
+          
+          Added annotations:
+          - jira/project-key: ${{ parameters.projectKey }}
+          - jira/component: ${{ parameters.component }}
+          - jira/token-type: ${{ parameters.tokenType }}
+          - jira/label: ${{ parameters.label }}
+
+  output:
+    links:
+      - title: Pull Request
+        url: ${{ steps['create-pull-request'].output.remoteUrl }}

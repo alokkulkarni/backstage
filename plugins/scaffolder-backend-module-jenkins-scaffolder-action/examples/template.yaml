@@ -1,0 +1,159 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: jenkins-ci-template
+  title: Jenkins CI/CD Pipeline Setup
+  description: Create Jenkins pipelines for your project with build, release, and quality gates
+  tags:
+    - jenkins
+    - ci-cd
+    - pipeline
+    - recommended
+spec:
+  owner: platform-team
+  type: service
+  parameters:
+    - title: Project Information
+      required:
+        - name
+        - description
+      properties:
+        name:
+          title: Project Name
+          type: string
+          description: Name of your project (will be used as artifact ID)
+          pattern: '^[a-zA-Z0-9-_]+$'
+        description:
+          title: Description
+          type: string
+          description: Brief description of your project
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: [Group, User]
+
+    - title: Jenkins Configuration
+      required:
+        - enableBuild
+      properties:
+        enableBuild:
+          title: Enable Build Pipeline
+          type: boolean
+          default: true
+          description: Create a build pipeline (Jenkinsfile.build)
+        enableRelease:
+          title: Enable Release Pipeline
+          type: boolean
+          default: false
+          description: Create a release pipeline (Jenkinsfile.release)
+        enableQuality:
+          title: Enable Quality Gate Pipeline
+          type: boolean
+          default: false
+          description: Create a quality gate pipeline (ci/Jenkinsfile.quality)
+        executeAfterCreation:
+          title: Execute Build Pipeline After Creation
+          type: boolean
+          default: false
+          description: Automatically trigger the build pipeline after job creation
+
+    - title: Pipeline Parameters
+      properties:
+        defaultBranch:
+          title: Default Branch
+          type: string
+          default: main
+          description: Default branch for the pipelines
+        environment:
+          title: Default Environment
+          type: string
+          enum:
+            - dev
+            - staging
+            - prod
+          default: dev
+          description: Default deployment environment
+
+  steps:
+    - id: fetch
+      name: Fetch Skeleton
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          defaultBranch: ${{ parameters.defaultBranch }}
+          environment: ${{ parameters.environment }}
+
+    - id: createJenkinsJobs
+      name: Create Jenkins Jobs
+      action: jenkins:create-job
+      input:
+        skeletonPath: ./skeleton
+        artifactId: ${{ parameters.name }}
+        description: Jenkins pipelines for ${{ parameters.description }}
+        jobParameters:
+          BRANCH_NAME:
+            type: string
+            defaultValue: ${{ parameters.defaultBranch }}
+            description: Branch to build
+          ENVIRONMENT:
+            type: choice
+            choices:
+              - dev
+              - staging
+              - prod
+            defaultValue: ${{ parameters.environment }}
+            description: Target environment
+          RUN_TESTS:
+            type: boolean
+            defaultValue: true
+            description: Run unit tests
+
+    - id: executeBuildPipeline
+      name: Execute Build Pipeline
+      if: ${{ parameters.executeAfterCreation and parameters.enableBuild }}
+      action: jenkins:execute-job
+      input:
+        jobName: ${{ parameters.name }}-build
+        parameters:
+          BRANCH_NAME: ${{ parameters.defaultBranch }}
+          ENVIRONMENT: ${{ parameters.environment }}
+          RUN_TESTS: true
+        waitForCompletion: true
+        timeout: 600000  # 10 minutes
+
+    - id: register
+      name: Register in Software Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: '/catalog-info.yaml'
+
+  output:
+    links:
+      - title: Jenkins Jobs
+        url: ${{ steps.createJenkinsJobs.output.jobsUrl }}
+      - title: Repository
+        url: ${{ steps.publish.output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}
+    text:
+      - title: Jenkins Jobs Created
+        content: |
+          The following Jenkins jobs have been created:
+          ${{ steps.createJenkinsJobs.output.jobsSummary }}
+          
+          You can access them at: ${{ steps.createJenkinsJobs.output.jobsUrl }}
+      - title: Build Execution
+        condition: ${{ parameters.executeAfterCreation and parameters.enableBuild }}
+        content: |
+          Build pipeline executed with result: ${{ steps.executeBuildPipeline.output.result }}
+          Build URL: ${{ steps.executeBuildPipeline.output.url }}

@@ -1,0 +1,27 @@
+{
+  "name": "Default Catalog Read",
+  "description": "Allow all authenticated users to read catalog",
+  "resource": "catalog",
+  "actions": [
+    "read"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "*"
+    }
+  ],
+  "metadata": {
+    "priority": 10,
+    "category": "default",
+    "tags": [
+      "catalog",
+      "read",
+      "default"
+    ],
+    "createdAt": "2025-06-07T10:12:06.617Z",
+    "updatedAt": "2025-06-07T10:12:06.617Z"
+  },
+  "id": "e166032d-9e83-4ae8-aecb-88302f6206ec"
+}

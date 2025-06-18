@@ -1,0 +1,24 @@
+{
+  "name": "Scaffolder Template Access",
+  "description": "Grant access to use scaffolder templates",
+  "category": "scaffolder",
+  "template": {
+    "name": "Scaffolder Access - {{subject}}",
+    "description": "Access to scaffolder templates for {{subject}}",
+    "resource": "scaffolder",
+    "actions": [
+      "read",
+      "create"
+    ],
+    "effect": "allow"
+  },
+  "variables": [
+    {
+      "name": "subject",
+      "description": "User or group to grant scaffolder access to",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "id": "e8275cae-cb90-4ede-8616-847d5ff4a028"
+}

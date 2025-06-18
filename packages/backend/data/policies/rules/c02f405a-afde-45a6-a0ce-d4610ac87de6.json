@@ -1,0 +1,26 @@
+{
+  "name": "Admin Full Access",
+  "description": "Allow admin group full access to all resources",
+  "resource": "*",
+  "actions": [
+    "*"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "group",
+      "identifier": "group:default/admins"
+    }
+  ],
+  "metadata": {
+    "priority": 100,
+    "category": "admin",
+    "tags": [
+      "admin",
+      "full-access"
+    ],
+    "createdAt": "2025-06-07T10:12:06.619Z",
+    "updatedAt": "2025-06-07T10:12:06.619Z"
+  },
+  "id": "c02f405a-afde-45a6-a0ce-d4610ac87de6"
+}

@@ -1,0 +1,445 @@
+pipeline {
+    agent any
+    
+    environment {
+        JAVA_VERSION = '${{ values.javaVersion }}'
+        MAVEN_OPTS = '-Xmx1024m -Xms512m'
+        DOCKER_REGISTRY = "${params.DOCKER_REGISTRY ?: '${{ values.dockerRegistry }}'}"
+        IMAGE_NAME = "${DOCKER_REGISTRY}/${{ values.name }}"
+        GIT_REPO_URL = "${params.GIT_REPO_URL ?: 'https://github.com/your-org/${{ values.name }}.git'}"
+        BRANCH_NAME = "${env.BRANCH_NAME ?: 'main'}"
+        K8S_NAMESPACE = "${params.K8S_NAMESPACE ?: '${{ values.kubernetesNamespace }}'}"
+    }
+    
+    tools {
+        maven 'Maven-3.9'
+        jdk "JDK-${JAVA_VERSION}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 45, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+        skipDefaultCheckout(true)
+    }
+    
+    parameters {
+        string(name: 'DOCKER_REGISTRY', defaultValue: '${{ values.dockerRegistry }}', description: 'Docker registry URL')
+        string(name: 'GIT_REPO_URL', defaultValue: '${{ values.destination.owner }}/${{ values.destination.repo }}', description: 'Git repository URL')
+        string(name: 'K8S_NAMESPACE', defaultValue: '${{ values.kubernetesNamespace }}', description: 'Kubernetes namespace')
+        string(name: 'MAVEN_GOALS', defaultValue: '${{ values.mavenGoals }}', description: 'Maven goals to execute')
+        choice(name: 'MAVEN_PROFILE', choices: ['default', 'dev', 'test', 'prod'], description: 'Maven profile to activate')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip running tests')
+        booleanParam(name: 'PUBLISH_IMAGE', defaultValue: true, description: 'Publish Docker image to registry')
+        booleanParam(name: 'RUN_SECURITY_SCAN', defaultValue: true, description: 'Run security vulnerability scans')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🚀 Starting build for Spring Boot service: ${{ values.name }}"
+                    echo "📂 Repository: ${GIT_REPO_URL}"
+                    echo "🌿 Branch: ${BRANCH_NAME}"
+                    echo "☕ Java Version: ${JAVA_VERSION}"
+                }
+                
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "${BRANCH_NAME}"]],
+                    userRemoteConfigs: [[url: "${GIT_REPO_URL}"]]
+                ])
+                
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.BUILD_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                    env.IMAGE_TAG = "${IMAGE_NAME}:${BUILD_TAG}"
+                    env.IMAGE_LATEST = "${IMAGE_NAME}:latest"
+                    
+                    // Read Maven version
+                    env.MAVEN_VERSION = sh(
+                        script: 'mvn help:evaluate -Dexpression=project.version -q -DforceStdout',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Environment Setup') {
+            steps {
+                echo "🔧 Setting up build environment"
+                sh '''
+                    echo "Java Version: $(java -version)"
+                    echo "Maven Version: $(mvn -version)"
+                    echo "Docker Version: $(docker --version)"
+                    echo "Build Environment: ${MAVEN_PROFILE}"
+                '''
+            }
+        }
+        
+        stage('Maven Validate & Compile') {
+            steps {
+                echo "🔍 Validating Maven project and compiling"
+                sh '''
+                    mvn clean validate compile
+                    mvn dependency:resolve dependency:resolve-sources
+                '''
+            }
+        }
+        
+        stage('Code Quality & Security Analysis') {
+            parallel {
+                stage('Maven Checkstyle') {
+                    steps {
+                        echo "📋 Running Checkstyle analysis"
+                        sh 'mvn checkstyle:check || true'
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site',
+                                reportFiles: 'checkstyle.html',
+                                reportName: 'Checkstyle Report'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('SpotBugs Analysis') {
+                    steps {
+                        echo "🐛 Running SpotBugs static analysis"
+                        sh 'mvn spotbugs:check || true'
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site',
+                                reportFiles: 'spotbugs.html',
+                                reportName: 'SpotBugs Report'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Dependency Security Scan') {
+                    when {
+                        expression { return params.RUN_SECURITY_SCAN }
+                    }
+                    steps {
+                        echo "🔒 Running dependency security scan"
+                        sh '''
+                            # OWASP Dependency Check
+                            mvn org.owasp:dependency-check-maven:check || true
+                            
+                            # Maven Versions Plugin - Check for updates
+                            mvn versions:display-dependency-updates > target/dependency-updates.txt || true
+                            mvn versions:display-plugin-updates > target/plugin-updates.txt || true
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target',
+                                reportFiles: 'dependency-check-report.html',
+                                reportName: 'OWASP Dependency Check'
+                            ])
+                            archiveArtifacts artifacts: 'target/*-updates.txt', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Unit Tests') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            steps {
+                echo "🧪 Running unit tests"
+                sh '''
+                    mvn test -Dmaven.test.failure.ignore=true
+                '''
+            }
+            post {
+                always {
+                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target/site/jacoco',
+                        reportFiles: 'index.html',
+                        reportName: 'JaCoCo Coverage Report'
+                    ])
+                    
+                    // Publish JaCoCo coverage
+                    publishCoverage adapters: [
+                        jacocoAdapter('target/site/jacoco/jacoco.xml')
+                    ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                allOf {
+                    not { params.SKIP_TESTS }
+                    anyOf {
+                        changeset "**/src/test/**"
+                        changeset "**/src/main/**"
+                    }
+                }
+            }
+            steps {
+                echo "🔗 Running integration tests"
+                sh '''
+                    mvn failsafe:integration-test failsafe:verify -Dmaven.test.failure.ignore=true
+                '''
+            }
+            post {
+                always {
+                    publishTestResults testResultsPattern: 'target/failsafe-reports/*.xml'
+                }
+            }
+        }
+        
+        stage('Package Application') {
+            steps {
+                echo "📦 Packaging Spring Boot application"
+                script {
+                    def mavenProfile = params.MAVEN_PROFILE != 'default' ? "-P${params.MAVEN_PROFILE}" : ''
+                    sh """
+                        mvn package ${mavenProfile} \
+                            -DskipTests=${params.SKIP_TESTS} \
+                            -Dmaven.test.skip=${params.SKIP_TESTS}
+                    """
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'target/*.jar,target/*.war', fingerprint: true
+                    
+                    // Store application info
+                    script {
+                        def jarFile = sh(
+                            script: 'find target -name "*.jar" -not -name "*-sources.jar" | head -1',
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (jarFile) {
+                            env.JAR_FILE = jarFile
+                            echo "📦 Built artifact: ${jarFile}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            when {
+                expression { return params.PUBLISH_IMAGE }
+            }
+            steps {
+                script {
+                    echo "🐳 Building Docker image: ${env.IMAGE_TAG}"
+                    def image = docker.build("${env.IMAGE_TAG}")
+                    
+                    echo "🏷️ Tagging image as latest"
+                    sh "docker tag ${env.IMAGE_TAG} ${env.IMAGE_LATEST}"
+                    
+                    // Security scan of Docker image
+                    if (params.RUN_SECURITY_SCAN) {
+                        echo "🔒 Running Docker image security scan"
+                        sh """
+                            # Trivy security scan
+                            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\
+                                aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL \\
+                                --format json --output trivy-report.json ${env.IMAGE_TAG} || true
+                            
+                            # Docker Bench Security (if available)
+                            if command -v docker-bench-security &> /dev/null; then
+                                docker-bench-security || true
+                            fi
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    script {
+                        if (params.RUN_SECURITY_SCAN && fileExists('trivy-report.json')) {
+                            archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            when {
+                allOf {
+                    expression { return params.PUBLISH_IMAGE }
+                    anyOf {
+                        branch 'main'
+                        branch 'develop'
+                        branch 'release/*'
+                    }
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 Pushing Docker image to registry"
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                        def image = docker.image("${env.IMAGE_TAG}")
+                        image.push()
+                        image.push("latest")
+                        
+                        echo "✅ Image pushed: ${env.IMAGE_TAG}"
+                        echo "✅ Image pushed: ${env.IMAGE_LATEST}"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Development') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { return params.PUBLISH_IMAGE }
+                }
+            }
+            steps {
+                echo "🚀 Deploying to development environment"
+                sh '''
+                    echo "Image: ${IMAGE_TAG}"
+                    echo "Namespace: ${K8S_NAMESPACE}"
+                    
+                    # Update Kubernetes deployment
+                    kubectl set image deployment/${{ values.name }} app=${IMAGE_TAG} -n ${K8S_NAMESPACE} || true
+                    
+                    # Apply any updated configurations
+                    if [ -d "k8s" ]; then
+                        envsubst < k8s/deployment.yaml | kubectl apply -f - || true
+                        kubectl apply -f k8s/service.yaml -n ${K8S_NAMESPACE} || true
+                    fi
+                    
+                    # Wait for rollout
+                    kubectl rollout status deployment/${{ values.name }} -n ${K8S_NAMESPACE} --timeout=300s || true
+                '''
+            }
+        }
+        
+        stage('Health Check') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { return params.PUBLISH_IMAGE }
+                }
+            }
+            steps {
+                echo "🏥 Running health check"
+                script {
+                    // Wait for application to be ready
+                    sh '''
+                        echo "Waiting for application to be ready..."
+                        sleep 30
+                        
+                        # Check if deployment is ready
+                        kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE} || true
+                        
+                        # Get service endpoint
+                        SERVICE_IP=$(kubectl get service ${{ values.name }} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "localhost")
+                        SERVICE_PORT=$(kubectl get service ${{ values.name }} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8080")
+                        
+                        echo "Health check endpoint: http://${SERVICE_IP}:${SERVICE_PORT}/actuator/health"
+                        
+                        # Health check (if actuator is available)
+                        curl -f "http://${SERVICE_IP}:${SERVICE_PORT}/actuator/health" || echo "Health check endpoint not available"
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🧹 Cleaning up workspace"
+            sh '''
+                # Clean up Maven target directory
+                mvn clean || true
+                
+                # Clean up Docker images
+                docker system prune -f || true
+                
+                # Archive important logs
+                mkdir -p logs
+                cp target/surefire-reports/*.txt logs/ 2>/dev/null || true
+                cp target/failsafe-reports/*.txt logs/ 2>/dev/null || true
+            '''
+            
+            archiveArtifacts artifacts: 'logs/**/*', allowEmptyArchive: true
+        }
+        
+        success {
+            echo "✅ Build completed successfully!"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#ci-cd',
+                        color: 'good',
+                        message: ":white_check_mark: *${{ values.name }}* build #${env.BUILD_NUMBER} succeeded\\n" +
+                                "Branch: ${env.BRANCH_NAME}\\n" +
+                                "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                                "Image: ${env.IMAGE_TAG}\\n" +
+                                "Maven Version: ${env.MAVEN_VERSION}"
+                    )
+                }
+            }
+        }
+        
+        failure {
+            echo "❌ Build failed!"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#ci-cd',
+                        color: 'danger',
+                        message: ":x: *${{ values.name }}* build #${env.BUILD_NUMBER} failed\\n" +
+                                "Branch: ${env.BRANCH_NAME}\\n" +
+                                "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                                "Check: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+        
+        unstable {
+            echo "⚠️ Build is unstable"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#ci-cd',
+                        color: 'warning',
+                        message: ":warning: *${{ values.name }}* build #${env.BUILD_NUMBER} is unstable\\n" +
+                                "Branch: ${env.BRANCH_NAME}\\n" +
+                                "Check: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+    }
+}

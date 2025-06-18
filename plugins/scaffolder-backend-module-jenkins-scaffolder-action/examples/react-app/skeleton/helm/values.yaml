@@ -1,0 +1,233 @@
+# Default values for {{ values.component_id }}.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 2
+
+image:
+  repository: "{{ values.docker_registry }}/{{ values.organization }}/{{ values.component_id }}"
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "10"
+  hosts:
+    - host: "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: "{{ values.component_id }}-tls"
+      hosts:
+        - "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - {{ values.component_id }}
+        topologyKey: kubernetes.io/hostname
+
+# Environment variables
+env:
+  - name: NODE_ENV
+    value: "production"
+  - name: PORT
+    value: "3000"
+  - name: REACT_APP_API_URL
+    value: "https://api.{{ values.domain | default('example.com') }}"
+  - name: REACT_APP_VERSION
+    value: "1.0.0"
+
+# ConfigMap configuration
+configMap:
+  data:
+    nginx.conf: |
+      worker_processes auto;
+      error_log /var/log/nginx/error.log;
+      pid /run/nginx.pid;
+      
+      events {
+          worker_connections 1024;
+      }
+      
+      http {
+          log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+          
+          access_log /var/log/nginx/access.log main;
+          
+          sendfile on;
+          tcp_nopush on;
+          tcp_nodelay on;
+          keepalive_timeout 65;
+          types_hash_max_size 2048;
+          
+          include /etc/nginx/mime.types;
+          default_type application/octet-stream;
+          
+          gzip on;
+          gzip_vary on;
+          gzip_min_length 1024;
+          gzip_proxied any;
+          gzip_comp_level 6;
+          gzip_types
+              text/plain
+              text/css
+              text/xml
+              text/javascript
+              application/json
+              application/javascript
+              application/xml+rss
+              application/atom+xml
+              image/svg+xml;
+          
+          server {
+              listen 3000;
+              server_name localhost;
+              root /usr/share/nginx/html;
+              index index.html index.htm;
+              
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header Referrer-Policy "no-referrer-when-downgrade" always;
+              add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+              
+              # Handle client-side routing
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+              
+              # Cache static assets
+              location ~* \.(css|js|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot)$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+              
+              # Health check endpoint
+              location /health {
+                  access_log off;
+                  return 200 "healthy\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+      }
+
+# Probes configuration
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  successThreshold: 1
+  failureThreshold: 3
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+      ports:
+      - protocol: TCP
+        port: 3000
+  egress:
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 80
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

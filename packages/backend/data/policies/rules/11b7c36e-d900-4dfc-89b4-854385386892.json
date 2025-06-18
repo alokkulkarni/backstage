@@ -1,0 +1,41 @@
+{
+  "id": "11b7c36e-d900-4dfc-89b4-854385386892",
+  "name": "Guest Deny Permissions Access",
+  "description": "Deny guest users access to permissions and RBAC management",
+  "resource": "permissions*",
+  "actions": [
+    "*"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "permissions",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.107Z",
+    "updatedAt": "2025-06-13T15:23:09.107Z"
+  }
+}

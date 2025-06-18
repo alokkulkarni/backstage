@@ -1,0 +1,55 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: dev-environment
+  description: Development environment
+  annotations:
+    kubernetes.io/cluster: dev-cluster
+    argocd/app-name: dev-apps
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - kubernetes
+    - development
+    - argocd
+spec:
+  type: environment
+  owner: group:platform-team
+  system: deployment-infrastructure
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: staging-environment
+  description: Staging/QA environment
+  annotations:
+    kubernetes.io/cluster: staging-cluster
+    argocd/app-name: staging-apps
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - kubernetes
+    - staging
+    - argocd
+spec:
+  type: environment
+  owner: group:platform-team
+  system: deployment-infrastructure
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: production-environment
+  description: Production environment
+  annotations:
+    kubernetes.io/cluster: production-cluster
+    argocd/app-name: production-apps
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - kubernetes
+    - production
+    - argocd
+spec:
+  type: environment
+  owner: group:platform-team
+  system: deployment-infrastructure

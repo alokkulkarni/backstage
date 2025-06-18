@@ -1,0 +1,41 @@
+{
+  "id": "daf58c80-4e73-4200-b023-6ef991d3988d",
+  "name": "Guest Deny Plugin Configuration",
+  "description": "Deny guest users access to plugin configuration and management",
+  "resource": "plugin-*",
+  "actions": [
+    "*"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "plugin-config",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.113Z",
+    "updatedAt": "2025-06-13T15:23:09.113Z"
+  }
+}

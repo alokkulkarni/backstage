@@ -1,0 +1,383 @@
+pipeline {
+    agent any
+    
+    environment {
+        NODE_VERSION = '18'
+        SONAR_SCANNER_VERSION = '4.8.0.2856'
+    }
+    
+    tools {
+        nodejs "${NODE_VERSION}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 20, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        string(name: 'GIT_REPO_URL', defaultValue: '${{ values.destination.owner }}/${{ values.destination.repo }}', description: 'Git repository URL')
+        choice(name: 'ANALYSIS_TYPE', choices: ['full', 'diff', 'security-only'], description: 'Type of analysis to run')
+        booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: true, description: 'Fail build if quality gate fails')
+        string(name: 'SONAR_PROJECT_KEY', defaultValue: '${{ values.name }}', description: 'SonarQube project key')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "🔍 Starting quality analysis for ${{ values.name }}"
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "${env.BRANCH_NAME ?: 'main'}"]],
+                    userRemoteConfigs: [[url: "${params.GIT_REPO_URL}"]]
+                ])
+                
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo "📦 Installing dependencies for analysis"
+                sh '''
+                    npm ci --prefer-offline --no-audit
+                    npm install --save-dev @typescript-eslint/parser @typescript-eslint/eslint-plugin
+                    npm install --save-dev eslint-plugin-security eslint-plugin-react-hooks
+                '''
+            }
+        }
+        
+        stage('Code Quality Analysis') {
+            parallel {
+                stage('ESLint Analysis') {
+                    steps {
+                        echo "🔍 Running comprehensive ESLint analysis"
+                        sh '''
+                            mkdir -p reports/eslint
+                            npx eslint . --ext .js,.jsx,.ts,.tsx \\
+                            --format json --output-file reports/eslint/eslint-report.json \\
+                            --max-warnings 50 || true
+                            
+                            npx eslint . --ext .js,.jsx,.ts,.tsx \\
+                            --format html --output-file reports/eslint/eslint-report.html || true
+                            
+                            echo "ESLint analysis completed"
+                        '''
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports/eslint',
+                                reportFiles: 'eslint-report.html',
+                                reportName: 'ESLint Quality Report'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('TypeScript Analysis') {
+                    when {
+                        anyOf {
+                            changeset "**/*.ts"
+                            changeset "**/*.tsx"
+                            changeset "**/tsconfig.json"
+                        }
+                    }
+                    steps {
+                        echo "📝 Running TypeScript compiler analysis"
+                        sh '''
+                            mkdir -p reports/typescript
+                            npx tsc --noEmit --pretty false > reports/typescript/tsc-report.txt 2>&1 || true
+                            echo "TypeScript analysis completed"
+                        '''
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/typescript/*.txt', allowEmptyArchive: true
+                        }
+                    }
+                }
+                
+                stage('Security Analysis') {
+                    steps {
+                        echo "🔒 Running security analysis"
+                        sh '''
+                            mkdir -p reports/security
+                            
+                            # NPM Audit
+                            npm audit --json > reports/security/npm-audit.json 2>/dev/null || true
+                            
+                            # Snyk security scan (if available)
+                            if command -v snyk &> /dev/null; then
+                                snyk test --json > reports/security/snyk-report.json || true
+                            fi
+                            
+                            # ESLint security rules
+                            npx eslint . --ext .js,.jsx,.ts,.tsx \\
+                            --config .eslintrc-security.js \\
+                            --format json --output-file reports/security/eslint-security.json || true
+                            
+                            echo "Security analysis completed"
+                        '''
+                    }
+                }
+                
+                stage('Dependency Analysis') {
+                    steps {
+                        echo "📊 Analyzing dependencies"
+                        sh '''
+                            mkdir -p reports/dependencies
+                            
+                            # Outdated packages
+                            npm outdated --json > reports/dependencies/outdated.json 2>/dev/null || true
+                            
+                            # License check
+                            npx license-checker --json > reports/dependencies/licenses.json || true
+                            
+                            # Bundle analyzer (if build exists)
+                            if [ -d "build" ]; then
+                                npx webpack-bundle-analyzer build/static/js/*.js reports/dependencies/ --mode json || true
+                            fi
+                            
+                            echo "Dependency analysis completed"
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Test Coverage Analysis') {
+            steps {
+                echo "📈 Running test coverage analysis"
+                sh '''
+                    mkdir -p reports/coverage
+                    
+                    # Run tests with coverage
+                    npm run test:coverage || true
+                    
+                    # Generate coverage reports in multiple formats
+                    npx nyc report --reporter=json --report-dir=reports/coverage
+                    npx nyc report --reporter=lcov --report-dir=reports/coverage
+                    npx nyc report --reporter=html --report-dir=reports/coverage/html
+                    npx nyc report --reporter=cobertura --report-dir=reports/coverage
+                    
+                    echo "Coverage analysis completed"
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'reports/coverage/html',
+                        reportFiles: 'index.html',
+                        reportName: 'Test Coverage Report'
+                    ])
+                    
+                    publishCoverage adapters: [
+                        coberturaAdapter('reports/coverage/cobertura-coverage.xml')
+                    ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            environment {
+                SONAR_TOKEN = credentials('sonarqube-token')
+            }
+            steps {
+                script {
+                    echo "📊 Running SonarQube analysis"
+                    
+                    def sonarParams = [
+                        "-Dsonar.projectKey=${params.SONAR_PROJECT_KEY}",
+                        "-Dsonar.projectName=${{ values.name }}",
+                        "-Dsonar.projectVersion=${env.BUILD_NUMBER}",
+                        "-Dsonar.sources=src",
+                        "-Dsonar.tests=src",
+                        "-Dsonar.test.inclusions=**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.spec.js,**/*.spec.jsx,**/*.spec.ts,**/*.spec.tsx",
+                        "-Dsonar.javascript.lcov.reportPaths=reports/coverage/lcov.info",
+                        "-Dsonar.eslint.reportPaths=reports/eslint/eslint-report.json",
+                        "-Dsonar.typescript.lcov.reportPaths=reports/coverage/lcov.info",
+                        "-Dsonar.coverage.exclusions=**/*.test.*,**/*.spec.*,**/node_modules/**,**/coverage/**,**/build/**",
+                        "-Dsonar.cpd.exclusions=**/*.test.*,**/*.spec.*",
+                        "-Dsonar.scm.revision=${env.GIT_COMMIT}"
+                    ]
+                    
+                    if (env.CHANGE_ID) {
+                        sonarParams.addAll([
+                            "-Dsonar.pullrequest.key=${env.CHANGE_ID}",
+                            "-Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}",
+                            "-Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
+                        ])
+                    } else {
+                        sonarParams.add("-Dsonar.branch.name=${env.BRANCH_NAME}")
+                    }
+                    
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            npx sonar-scanner ${sonarParams.join(' ')}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            when {
+                expression { return params.FAIL_ON_QUALITY_GATE }
+            }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    echo "⏳ Waiting for SonarQube Quality Gate"
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Quality Gate failed: ${qg.status}"
+                        } else {
+                            echo "✅ Quality Gate passed!"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Performance Analysis') {
+            steps {
+                echo "⚡ Running performance analysis"
+                sh '''
+                    mkdir -p reports/performance
+                    
+                    # Bundle size analysis
+                    if [ -d "build" ]; then
+                        du -h build/static/js/*.js > reports/performance/bundle-sizes.txt
+                        
+                        # Lighthouse CI (if configured)
+                        if command -v lhci &> /dev/null; then
+                            lhci autorun || true
+                        fi
+                    fi
+                    
+                    echo "Performance analysis completed"
+                '''
+            }
+        }
+        
+        stage('Generate Quality Report') {
+            steps {
+                echo "📋 Generating comprehensive quality report"
+                sh '''
+                    mkdir -p reports/summary
+                    
+                    cat <<EOF > reports/summary/quality-summary.md
+# Quality Analysis Report - ${{ values.name }}
+
+**Build:** #${BUILD_NUMBER}  
+**Commit:** ${GIT_COMMIT_SHORT}  
+**Branch:** ${BRANCH_NAME}  
+**Date:** $(date)
+
+## Analysis Results
+
+### Code Quality
+- ESLint: $(if [ -f "reports/eslint/eslint-report.json" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+- TypeScript: $(if [ -f "reports/typescript/tsc-report.txt" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+- SonarQube: $(if [ -f ".scannerwork/report-task.txt" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+
+### Security
+- NPM Audit: $(if [ -f "reports/security/npm-audit.json" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+- Security Linting: $(if [ -f "reports/security/eslint-security.json" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+
+### Test Coverage
+- Coverage Report: $(if [ -f "reports/coverage/lcov.info" ]; then echo "✅ Generated"; else echo "❌ Failed"; fi)
+
+### Dependencies
+- Outdated Check: $(if [ -f "reports/dependencies/outdated.json" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+- License Check: $(if [ -f "reports/dependencies/licenses.json" ]; then echo "✅ Completed"; else echo "❌ Failed"; fi)
+
+## Recommendations
+
+$(if [ -f "reports/eslint/eslint-report.json" ]; then echo "- Review ESLint findings in the detailed report"; fi)
+$(if [ -f "reports/security/npm-audit.json" ]; then echo "- Address security vulnerabilities found in dependencies"; fi)
+$(if [ -f "reports/dependencies/outdated.json" ]; then echo "- Consider updating outdated dependencies"; fi)
+
+EOF
+                    
+                    echo "Quality report generated"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'reports/summary',
+                        reportFiles: 'quality-summary.md',
+                        reportName: 'Quality Summary Report'
+                    ])
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "📊 Quality analysis completed"
+            
+            // Clean up large temporary files
+            sh '''
+                rm -rf node_modules/.cache
+                find reports -name "*.tmp" -delete 2>/dev/null || true
+            '''
+        }
+        
+        success {
+            echo "✅ Quality analysis passed!"
+            slackSend(
+                channel: '#quality-gates',
+                color: 'good',
+                message: ":white_check_mark: *${{ values.name }}* quality analysis passed\\n" +
+                        "Build: #${env.BUILD_NUMBER}\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Commit: ${env.GIT_COMMIT_SHORT}"
+            )
+        }
+        
+        failure {
+            echo "❌ Quality analysis failed!"
+            slackSend(
+                channel: '#quality-gates',
+                color: 'danger',
+                message: ":x: *${{ values.name }}* quality analysis failed\\n" +
+                        "Build: #${env.BUILD_NUMBER}\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Check: ${env.BUILD_URL}"
+            )
+        }
+        
+        unstable {
+            echo "⚠️ Quality analysis is unstable"
+            slackSend(
+                channel: '#quality-gates',
+                color: 'warning',
+                message: ":warning: *${{ values.name }}* quality analysis is unstable\\n" +
+                        "Build: #${env.BUILD_NUMBER}\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Review: ${env.BUILD_URL}"
+            )
+        }
+    }
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "@backstage/cli/config/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

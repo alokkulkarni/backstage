@@ -1,0 +1,22 @@
+apiVersion: v2
+name: {{ values.component_id }}
+description: A Helm chart for {{ values.component_id }} Python application
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - python
+  - {{ values.python_framework | default("fastapi") }}
+  - backend
+  - api
+  - kubernetes
+home: {{ values.repository_url }}
+sources:
+  - {{ values.repository_url }}
+maintainers:
+  - name: {{ values.owner }}
+    email: {{ values.owner_email }}
+annotations:
+  category: Backend
+  licenses: {{ values.license | default("MIT") }}
+dependencies: []

@@ -1,0 +1,50 @@
+{
+  "name": "Guest Access Denial Template",
+  "description": "Template for creating denial policies for sensitive resources",
+  "category": "security",
+  "variables": [
+    {
+      "name": "resource_pattern",
+      "description": "The resource pattern to deny access to",
+      "type": "string",
+      "required": true,
+      "defaultValue": "terraform*",
+      "options": [
+        "terraform*",
+        "kubernetes*",
+        "admin*",
+        "permissions*",
+        "plugin-*"
+      ]
+    }
+  ],
+  "template": {
+    "name": "Guest {{resource_pattern}} Access Denial",
+    "description": "Denies guest users access to {{resource_pattern}} resources",
+    "resource": "{{resource_pattern}}",
+    "actions": [
+      "*"
+    ],
+    "effect": "deny",
+    "conditions": [
+      {
+        "field": "user.identity.userEntityRef",
+        "operator": "in",
+        "value": [
+          "user:guest",
+          "user:default/guest"
+        ]
+      }
+    ],
+    "metadata": {
+      "priority": 200,
+      "category": "guest-security",
+      "tags": [
+        "guest",
+        "security",
+        "deny"
+      ]
+    }
+  },
+  "id": "bae455ff-8d0c-4413-aee4-888434fbfca9"
+}

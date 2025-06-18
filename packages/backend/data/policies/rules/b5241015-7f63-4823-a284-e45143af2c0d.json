@@ -1,0 +1,48 @@
+{
+  "id": "b5241015-7f63-4823-a284-e45143af2c0d",
+  "name": "Guest Deny CI/CD Write Operations",
+  "description": "Deny guest users write access to CI/CD systems",
+  "resource": "jenkins*",
+  "actions": [
+    "create",
+    "update",
+    "delete",
+    "execute",
+    "trigger",
+    "restart",
+    "stop"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "jenkins",
+      "cicd",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.111Z",
+    "updatedAt": "2025-06-13T15:23:09.111Z"
+  }
+}

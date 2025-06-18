@@ -1,0 +1,636 @@
+pipeline {
+    agent any
+    
+    environment {
+        JAVA_VERSION = '${{ values.javaVersion }}'
+        MAVEN_OPTS = '-Xmx1024m -Xms512m'
+        DOCKER_REGISTRY = "${params.DOCKER_REGISTRY ?: '${{ values.dockerRegistry }}'}"
+        IMAGE_NAME = "${DOCKER_REGISTRY}/${{ values.name }}"
+        K8S_NAMESPACE = "${params.K8S_NAMESPACE ?: '${{ values.kubernetesNamespace }}'}"
+    }
+    
+    tools {
+        maven 'Maven-3.9'
+        jdk "JDK-${JAVA_VERSION}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['staging', 'production'],
+            description: 'Target environment for deployment'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Docker image tag to deploy'
+        )
+        string(
+            name: 'DOCKER_REGISTRY',
+            defaultValue: '${{ values.dockerRegistry }}',
+            description: 'Docker registry URL'
+        )
+        string(
+            name: 'K8S_NAMESPACE',
+            defaultValue: '${{ values.kubernetesNamespace }}',
+            description: 'Kubernetes namespace for deployment'
+        )
+        booleanParam(
+            name: 'SKIP_SMOKE_TESTS',
+            defaultValue: false,
+            description: 'Skip smoke tests after deployment'
+        )
+        booleanParam(
+            name: 'ENABLE_BLUE_GREEN',
+            defaultValue: true,
+            description: 'Use blue-green deployment strategy'
+        )
+        choice(
+            name: 'ROLLBACK_STRATEGY',
+            choices: ['auto', 'manual', 'none'],
+            description: 'Rollback strategy on deployment failure'
+        )
+        string(
+            name: 'HEALTH_CHECK_TIMEOUT',
+            defaultValue: '300',
+            description: 'Health check timeout in seconds'
+        )
+    }
+    
+    stages {
+        stage('Validate Deployment') {
+            steps {
+                script {
+                    echo "🔍 Validating deployment parameters"
+                    echo "Environment: ${params.ENVIRONMENT}"
+                    echo "Image: ${params.IMAGE_TAG}"
+                    echo "Namespace: ${K8S_NAMESPACE}"
+                    echo "Blue-Green: ${params.ENABLE_BLUE_GREEN}"
+                    
+                    // Validate image exists
+                    sh """
+                        echo "Checking if image exists in registry..."
+                        docker pull ${IMAGE_NAME}:${params.IMAGE_TAG} || {
+                            echo "❌ Image ${IMAGE_NAME}:${params.IMAGE_TAG} not found in registry"
+                            exit 1
+                        }
+                        echo "✅ Image validated successfully"
+                    """
+                }
+            }
+        }
+        
+        stage('Pre-deployment Health Check') {
+            steps {
+                script {
+                    echo "🏥 Checking current application health"
+                    sh """
+                        # Check if namespace exists
+                        kubectl get namespace ${K8S_NAMESPACE} || kubectl create namespace ${K8S_NAMESPACE}
+                        
+                        # Check current deployment status
+                        if kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE} >/dev/null 2>&1; then
+                            echo "Current deployment status:"
+                            kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE}
+                            kubectl get pods -l app=${{ values.name }} -n ${K8S_NAMESPACE}
+                            
+                            # Store current image for potential rollback
+                            CURRENT_IMAGE=\$(kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].image}')
+                            echo "Current image: \$CURRENT_IMAGE"
+                            echo "\$CURRENT_IMAGE" > current-image.txt
+                        else
+                            echo "No existing deployment found"
+                            echo "new-deployment" > current-image.txt
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('Blue-Green Deployment Setup') {
+            when {
+                expression { return params.ENABLE_BLUE_GREEN }
+            }
+            steps {
+                script {
+                    echo "🔵🟢 Setting up blue-green deployment"
+                    sh """
+                        # Create blue-green deployment configuration
+                        cat <<EOF > blue-green-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ values.name }}-green
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+    version: green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ${{ values.name }}
+      version: green
+  template:
+    metadata:
+      labels:
+        app: ${{ values.name }}
+        version: green
+    spec:
+      containers:
+      - name: app
+        image: ${IMAGE_NAME}:${params.IMAGE_TAG}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "${params.ENVIRONMENT}"
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          value: "health,info,metrics,prometheus"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ values.name }}-green
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+    version: green
+spec:
+  selector:
+    app: ${{ values.name }}
+    version: green
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+EOF
+                        
+                        echo "Deploying green version..."
+                        kubectl apply -f blue-green-deployment.yaml
+                    """
+                }
+            }
+        }
+        
+        stage('Standard Deployment') {
+            when {
+                not {
+                    expression { return params.ENABLE_BLUE_GREEN }
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 Performing standard rolling deployment"
+                    sh """
+                        cat <<EOF > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ values.name }}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: ${{ values.name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ values.name }}
+    spec:
+      containers:
+      - name: app
+        image: ${IMAGE_NAME}:${params.IMAGE_TAG}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "${params.ENVIRONMENT}"
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          value: "health,info,metrics,prometheus"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ values.name }}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+spec:
+  selector:
+    app: ${{ values.name }}
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+EOF
+                        
+                        kubectl apply -f deployment.yaml
+                        kubectl rollout status deployment/${{ values.name }} -n ${K8S_NAMESPACE} --timeout=${params.HEALTH_CHECK_TIMEOUT}s
+                    """
+                }
+            }
+        }
+        
+        stage('Wait for Green Deployment') {
+            when {
+                expression { return params.ENABLE_BLUE_GREEN }
+            }
+            steps {
+                script {
+                    echo "⏳ Waiting for green deployment to be ready"
+                    sh """
+                        kubectl rollout status deployment/${{ values.name }}-green -n ${K8S_NAMESPACE} --timeout=${params.HEALTH_CHECK_TIMEOUT}s
+                        
+                        # Wait for pods to be ready
+                        kubectl wait --for=condition=ready pod -l app=${{ values.name }},version=green -n ${K8S_NAMESPACE} --timeout=${params.HEALTH_CHECK_TIMEOUT}s
+                        
+                        echo "✅ Green deployment is ready"
+                    """
+                }
+            }
+        }
+        
+        stage('Health Check & Smoke Tests') {
+            steps {
+                script {
+                    echo "🏥 Running comprehensive health checks"
+                    def serviceName = params.ENABLE_BLUE_GREEN ? "${{ values.name }}-green" : "${{ values.name }}"
+                    
+                    sh """
+                        # Get service endpoint
+                        kubectl get service ${serviceName} -n ${K8S_NAMESPACE}
+                        
+                        # Port forward for health check
+                        kubectl port-forward service/${serviceName} 8080:8080 -n ${K8S_NAMESPACE} &
+                        PORT_FORWARD_PID=\$!
+                        
+                        # Wait for port forward to be ready
+                        sleep 10
+                        
+                        # Health checks
+                        echo "Running health checks..."
+                        
+                        # Basic health check
+                        for i in {1..10}; do
+                            if curl -f http://localhost:8080/actuator/health; then
+                                echo "✅ Health check passed"
+                                break
+                            else
+                                echo "⏳ Health check attempt \$i failed, retrying..."
+                                sleep 10
+                            fi
+                            if [ \$i -eq 10 ]; then
+                                echo "❌ Health check failed after 10 attempts"
+                                kill \$PORT_FORWARD_PID || true
+                                exit 1
+                            fi
+                        done
+                        
+                        # Detailed health info
+                        echo "Application info:"
+                        curl -s http://localhost:8080/actuator/info || echo "Info endpoint not available"
+                        
+                        # Metrics check
+                        echo "Checking metrics endpoint:"
+                        curl -s http://localhost:8080/actuator/metrics || echo "Metrics endpoint not available"
+                        
+                        # Clean up port forward
+                        kill \$PORT_FORWARD_PID || true
+                    """
+                }
+            }
+        }
+        
+        stage('Smoke Tests') {
+            when {
+                not { params.SKIP_SMOKE_TESTS }
+            }
+            steps {
+                script {
+                    echo "💨 Running smoke tests"
+                    def serviceName = params.ENABLE_BLUE_GREEN ? "${{ values.name }}-green" : "${{ values.name }}"
+                    
+                    sh """
+                        # Create a test pod for smoke testing
+                        cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-test-${env.BUILD_NUMBER}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      echo "Running smoke tests against ${serviceName}:8080"
+      
+      # Test health endpoint
+      curl -f http://${serviceName}:8080/actuator/health || exit 1
+      echo "✅ Health endpoint test passed"
+      
+      # Test info endpoint
+      curl -f http://${serviceName}:8080/actuator/info || echo "Info endpoint not available"
+      
+      # Test metrics endpoint
+      curl -f http://${serviceName}:8080/actuator/metrics || echo "Metrics endpoint not available"
+      
+      # Add application-specific smoke tests here
+      # curl -f http://${serviceName}:8080/api/health || exit 1
+      
+      echo "✅ All smoke tests passed"
+EOF
+                        
+                        # Wait for smoke test completion
+                        kubectl wait --for=condition=completed pod/smoke-test-${env.BUILD_NUMBER} -n ${K8S_NAMESPACE} --timeout=300s
+                        
+                        # Check smoke test results
+                        if kubectl logs smoke-test-${env.BUILD_NUMBER} -n ${K8S_NAMESPACE} | grep -q "All smoke tests passed"; then
+                            echo "✅ Smoke tests passed"
+                        else
+                            echo "❌ Smoke tests failed"
+                            kubectl logs smoke-test-${env.BUILD_NUMBER} -n ${K8S_NAMESPACE}
+                            exit 1
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('Switch Traffic (Blue-Green)') {
+            when {
+                expression { return params.ENABLE_BLUE_GREEN }
+            }
+            steps {
+                script {
+                    echo "🔄 Switching traffic to green deployment"
+                    sh """
+                        # Update main service to point to green deployment
+                        cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ values.name }}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+spec:
+  selector:
+    app: ${{ values.name }}
+    version: green
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+EOF
+                        
+                        echo "✅ Traffic switched to green deployment"
+                        
+                        # Wait a bit for traffic to switch
+                        sleep 30
+                        
+                        # Verify traffic switch
+                        kubectl port-forward service/${{ values.name }} 8081:8080 -n ${K8S_NAMESPACE} &
+                        VERIFY_PID=\$!
+                        sleep 5
+                        
+                        if curl -f http://localhost:8081/actuator/health; then
+                            echo "✅ Traffic switch verified"
+                        else
+                            echo "❌ Traffic switch verification failed"
+                            kill \$VERIFY_PID || true
+                            exit 1
+                        fi
+                        
+                        kill \$VERIFY_PID || true
+                    """
+                }
+            }
+        }
+        
+        stage('Clean Up Old Deployment') {
+            when {
+                expression { return params.ENABLE_BLUE_GREEN }
+            }
+            steps {
+                script {
+                    echo "🧹 Cleaning up blue deployment"
+                    sh """
+                        # Scale down old deployment if it exists
+                        if kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE} >/dev/null 2>&1; then
+                            echo "Scaling down blue deployment..."
+                            kubectl scale deployment ${{ values.name }} --replicas=0 -n ${K8S_NAMESPACE}
+                            
+                            # Wait before deletion
+                            sleep 30
+                            
+                            # Delete old deployment
+                            kubectl delete deployment ${{ values.name }} -n ${K8S_NAMESPACE} || true
+                        fi
+                        
+                        # Rename green deployment to main
+                        kubectl patch deployment ${{ values.name }}-green -n ${K8S_NAMESPACE} -p '{"metadata":{"name":"${{ values.name }}"}}'
+                        
+                        # Update labels
+                        kubectl patch deployment ${{ values.name }} -n ${K8S_NAMESPACE} -p '{"spec":{"selector":{"matchLabels":{"version":null}},"template":{"metadata":{"labels":{"version":null}}}}}'
+                        
+                        echo "✅ Blue-green deployment completed successfully"
+                    """
+                }
+            }
+        }
+        
+        stage('Post-deployment Validation') {
+            steps {
+                script {
+                    echo "✅ Running post-deployment validation"
+                    sh """
+                        # Final health check
+                        kubectl port-forward service/${{ values.name }} 8082:8080 -n ${K8S_NAMESPACE} &
+                        FINAL_PID=\$!
+                        sleep 10
+                        
+                        echo "Final validation..."
+                        curl -f http://localhost:8082/actuator/health || {
+                            echo "❌ Final health check failed"
+                            kill \$FINAL_PID || true
+                            exit 1
+                        }
+                        
+                        # Check deployment status
+                        kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE}
+                        kubectl get pods -l app=${{ values.name }} -n ${K8S_NAMESPACE}
+                        kubectl get service ${{ values.name }} -n ${K8S_NAMESPACE}
+                        
+                        kill \$FINAL_PID || true
+                        
+                        echo "✅ Deployment validation completed successfully"
+                    """
+                }
+            }
+        }
+        
+        stage('Update Monitoring & Alerts') {
+            when {
+                expression { return params.ENVIRONMENT == 'production' }
+            }
+            steps {
+                echo "📊 Updating monitoring and alerts"
+                sh """
+                    # Update ServiceMonitor for Prometheus (if using)
+                    cat <<EOF | kubectl apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ${{ values.name }}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+spec:
+  selector:
+    matchLabels:
+      app: ${{ values.name }}
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s
+    scrapeTimeout: 10s
+EOF
+                    
+                    echo "✅ Monitoring configuration updated"
+                """
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                echo "🧹 Cleaning up test resources"
+                sh """
+                    # Clean up smoke test pod
+                    kubectl delete pod smoke-test-${env.BUILD_NUMBER} -n ${K8S_NAMESPACE} --ignore-not-found=true
+                    
+                    # Clean up temporary files
+                    rm -f blue-green-deployment.yaml deployment.yaml current-image.txt
+                """
+            }
+        }
+        
+        success {
+            echo "✅ Deployment completed successfully!"
+            script {
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'good',
+                        message: ":rocket: *${{ values.name }}* deployed successfully to *${params.ENVIRONMENT}*\\n" +
+                                "Image: ${IMAGE_NAME}:${params.IMAGE_TAG}\\n" +
+                                "Namespace: ${K8S_NAMESPACE}\\n" +
+                                "Strategy: ${params.ENABLE_BLUE_GREEN ? 'Blue-Green' : 'Rolling'}\\n" +
+                                "Build: #${env.BUILD_NUMBER}"
+                    )
+                }
+            }
+        }
+        
+        failure {
+            echo "❌ Deployment failed!"
+            script {
+                // Rollback logic
+                if (params.ROLLBACK_STRATEGY == 'auto') {
+                    echo "🔄 Attempting automatic rollback..."
+                    sh """
+                        if [ -f current-image.txt ] && [ "\$(cat current-image.txt)" != "new-deployment" ]; then
+                            PREVIOUS_IMAGE=\$(cat current-image.txt)
+                            echo "Rolling back to: \$PREVIOUS_IMAGE"
+                            kubectl set image deployment/${{ values.name }} app=\$PREVIOUS_IMAGE -n ${K8S_NAMESPACE} || true
+                            kubectl rollout status deployment/${{ values.name }} -n ${K8S_NAMESPACE} --timeout=300s || true
+                            echo "Rollback attempt completed"
+                        fi
+                    """
+                }
+                
+                if (env.SLACK_WEBHOOK) {
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'danger',
+                        message: ":x: *${{ values.name }}* deployment to *${params.ENVIRONMENT}* failed\\n" +
+                                "Image: ${IMAGE_NAME}:${params.IMAGE_TAG}\\n" +
+                                "Rollback: ${params.ROLLBACK_STRATEGY}\\n" +
+                                "Check: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+    }
+}

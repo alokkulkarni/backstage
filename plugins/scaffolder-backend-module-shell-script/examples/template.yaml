@@ -1,0 +1,604 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: shell-script-example
+  title: Shell Script Example Template
+  description: Example template demonstrating the shell:execute action
+  tags:
+    - shell
+    - example
+    - nodejs
+spec:
+  owner: platform-team
+  type: service
+  
+  parameters:
+    - title: Project Information
+      required:
+        - name
+        - description
+      properties:
+        name:
+          title: Project Name
+          type: string
+          description: Name of the project
+          pattern: '^[a-zA-Z]([a-zA-Z0-9._-])*$'
+        description:
+          title: Description
+          type: string
+          description: Description of the project
+        
+    - title: Setup Options
+      properties:
+        setupType:
+          title: Setup Type
+          type: string
+          description: Type of setup to perform
+          default: basic
+          enum:
+            - basic
+            - advanced
+            - docker
+          enumNames:
+            - Basic Node.js Setup
+            - Advanced Setup with Tests
+            - Docker Setup
+        installDependencies:
+          title: Install Dependencies
+          type: boolean
+          default: true
+          description: Automatically install npm dependencies
+        runTests:
+          title: Run Tests
+          type: boolean
+          default: false
+          description: Run test suite after setup
+
+  steps:
+    - id: fetch
+      name: Fetch Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+
+    - id: basic-setup
+      name: Basic Project Setup
+      if: ${{ parameters.setupType === 'basic' }}
+      action: shell:execute
+      input:
+        script: |
+          echo "Setting up basic Node.js project: ${{ parameters.name }}"
+          echo "Description: ${{ parameters.description }}"
+          
+          # Create basic project structure
+          mkdir -p src tests docs
+          
+          # Create basic package.json
+          cat > package.json << 'EOF'
+          {
+            "name": "${{ parameters.name }}",
+            "version": "1.0.0",
+            "description": "${{ parameters.description }}",
+            "main": "src/index.js",
+            "scripts": {
+              "start": "node src/index.js",
+              "test": "echo \"Error: no test specified\" && exit 1"
+            },
+            "keywords": [],
+            "author": "",
+            "license": "ISC"
+          }
+          EOF
+          
+          # Create basic index.js
+          cat > src/index.js << 'EOF'
+          console.log('Hello from ${{ parameters.name }}!');
+          console.log('${{ parameters.description }}');
+          EOF
+          
+          echo "Basic setup completed!"
+        workingDirectory: .
+        timeout: 30000
+
+    - id: advanced-setup
+      name: Advanced Project Setup
+      if: ${{ parameters.setupType === 'advanced' }}
+      action: shell:execute
+      input:
+        script: |
+          echo "Setting up advanced Node.js project: ${{ parameters.name }}"
+          
+          # Create advanced project structure
+          mkdir -p src/{controllers,services,utils} tests/{unit,integration} docs config
+          
+          # Create advanced package.json with more dependencies
+          cat > package.json << 'EOF'
+          {
+            "name": "${{ parameters.name }}",
+            "version": "1.0.0",
+            "description": "${{ parameters.description }}",
+            "main": "src/index.js",
+            "scripts": {
+              "start": "node src/index.js",
+              "dev": "nodemon src/index.js",
+              "test": "jest",
+              "test:watch": "jest --watch",
+              "test:coverage": "jest --coverage",
+              "lint": "eslint src/**/*.js",
+              "lint:fix": "eslint src/**/*.js --fix"
+            },
+            "keywords": ["nodejs", "api", "service"],
+            "author": "",
+            "license": "ISC",
+            "dependencies": {
+              "express": "^4.18.2",
+              "cors": "^2.8.5",
+              "helmet": "^7.1.0"
+            },
+            "devDependencies": {
+              "jest": "^29.7.0",
+              "nodemon": "^3.0.1",
+              "eslint": "^8.53.0",
+              "@eslint/js": "^9.0.0"
+            }
+          }
+          EOF
+          
+          # Create Express server
+          cat > src/index.js << 'EOF'
+          const express = require('express');
+          const cors = require('cors');
+          const helmet = require('helmet');
+          
+          const app = express();
+          const PORT = process.env.PORT || 3000;
+          
+          // Middleware
+          app.use(helmet());
+          app.use(cors());
+          app.use(express.json());
+          
+          // Routes
+          app.get('/', (req, res) => {
+            res.json({
+              message: 'Welcome to ${{ parameters.name }}!',
+              description: '${{ parameters.description }}',
+              version: '1.0.0'
+            });
+          });
+          
+          app.get('/health', (req, res) => {
+            res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+          });
+          
+          app.listen(PORT, () => {
+            console.log(`${{ parameters.name }} server running on port ${PORT}`);
+          });
+          
+          module.exports = app;
+          EOF
+          
+          # Create test file
+          cat > tests/unit/index.test.js << 'EOF'
+          const request = require('supertest');
+          const app = require('../../src/index');
+          
+          describe('GET /', () => {
+            it('should return welcome message', async () => {
+              const response = await request(app).get('/');
+              expect(response.status).toBe(200);
+              expect(response.body.message).toContain('${{ parameters.name }}');
+            });
+          });
+          
+          describe('GET /health', () => {
+            it('should return health status', async () => {
+              const response = await request(app).get('/health');
+              expect(response.status).toBe(200);
+              expect(response.body.status).toBe('OK');
+            });
+          });
+          EOF
+          
+          # Create ESLint config
+          cat > .eslintrc.js << 'EOF'
+          module.exports = {
+            env: {
+              browser: true,
+              commonjs: true,
+              es2021: true,
+              node: true,
+              jest: true
+            },
+            extends: 'eslint:recommended',
+            parserOptions: {
+              ecmaVersion: 12
+            },
+            rules: {
+              'indent': ['error', 2],
+              'linebreak-style': ['error', 'unix'],
+              'quotes': ['error', 'single'],
+              'semi': ['error', 'always']
+            }
+          };
+          EOF
+          
+          echo "Advanced setup completed!"
+        workingDirectory: .
+        timeout: 60000
+
+    - id: docker-setup
+      name: Docker Setup
+      if: ${{ parameters.setupType === 'docker' }}
+      action: shell:execute
+      input:
+        script: |
+          echo "Setting up Docker configuration for: ${{ parameters.name }}"
+          
+          # Create Dockerfile
+          cat > Dockerfile << 'EOF'
+          FROM node:18-alpine
+          
+          # Set working directory
+          WORKDIR /app
+          
+          # Copy package files
+          COPY package*.json ./
+          
+          # Install dependencies
+          RUN npm ci --only=production
+          
+          # Copy source code
+          COPY src/ ./src/
+          
+          # Create non-root user
+          RUN addgroup -g 1001 -S nodejs
+          RUN adduser -S nodejs -u 1001
+          USER nodejs
+          
+          # Expose port
+          EXPOSE 3000
+          
+          # Health check
+          HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+            CMD node -e "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+          
+          # Start application
+          CMD ["npm", "start"]
+          EOF
+          
+          # Create docker-compose.yml
+          cat > docker-compose.yml << 'EOF'
+          version: '3.8'
+          
+          services:
+            app:
+              build: .
+              container_name: ${{ parameters.name }}
+              ports:
+                - "3000:3000"
+              environment:
+                - NODE_ENV=development
+                - PORT=3000
+              volumes:
+                - ./src:/app/src:ro
+              restart: unless-stopped
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+          
+          networks:
+            default:
+              name: ${{ parameters.name }}-network
+          EOF
+          
+          # Create .dockerignore
+          cat > .dockerignore << 'EOF'
+          node_modules
+          npm-debug.log
+          .git
+          .gitignore
+          README.md
+          .env
+          .nyc_output
+          coverage
+          .dockerignore
+          Dockerfile
+          docker-compose.yml
+          tests
+          docs
+          EOF
+          
+          echo "Docker setup completed!"
+        workingDirectory: .
+        timeout: 30000
+
+    - id: install-deps
+      name: Install Dependencies
+      if: ${{ parameters.installDependencies }}
+      action: shell:execute
+      input:
+        script: |
+          echo "Installing npm dependencies..."
+          
+          # Check if package.json exists
+          if [ ! -f "package.json" ]; then
+            echo "Error: package.json not found!"
+            exit 1
+          fi
+          
+          # Install dependencies
+          npm install
+          
+          echo "Dependencies installed successfully!"
+          echo "Installed packages:"
+          npm list --depth=0
+        workingDirectory: .
+        timeout: 180000
+        environment:
+          NODE_ENV: development
+
+    - id: run-tests
+      name: Run Tests
+      if: ${{ parameters.runTests && parameters.setupType === 'advanced' }}
+      action: shell:execute
+      input:
+        script: |
+          echo "Running test suite..."
+          
+          # Install test dependencies (supertest for API testing)
+          npm install --save-dev supertest
+          
+          # Run linting
+          echo "Running ESLint..."
+          npm run lint
+          
+          # Run tests
+          echo "Running Jest tests..."
+          npm test
+          
+          echo "All tests passed!"
+        workingDirectory: .
+        timeout: 120000
+        continueOnError: false
+
+    - id: create-readme
+      name: Create README
+      action: shell:execute
+      input:
+        script: |
+          echo "Creating README.md..."
+          
+          cat > README.md << 'EOF'
+          # ${{ parameters.name }}
+          
+          ${{ parameters.description }}
+          
+          ## Setup Type
+          
+          This project was created with: **${{ parameters.setupType }}** setup
+          
+          ## Getting Started
+          
+          ### Prerequisites
+          
+          - Node.js (v18 or later)
+          - npm
+          {% if parameters.setupType === 'docker' %}
+          - Docker
+          - Docker Compose
+          {% endif %}
+          
+          ### Installation
+          
+          ```bash
+          # Clone the repository
+          git clone <repository-url>
+          cd ${{ parameters.name }}
+          
+          # Install dependencies
+          npm install
+          ```
+          
+          ### Running the Application
+          
+          {% if parameters.setupType === 'docker' %}
+          #### Using Docker
+          
+          ```bash
+          # Build and run with Docker Compose
+          docker-compose up --build
+          
+          # Or build and run manually
+          docker build -t ${{ parameters.name }} .
+          docker run -p 3000:3000 ${{ parameters.name }}
+          ```
+          
+          #### Using Node.js directly
+          {% endif %}
+          
+          ```bash
+          # Start the application
+          npm start
+          
+          {% if parameters.setupType === 'advanced' %}
+          # Start in development mode (with nodemon)
+          npm run dev
+          {% endif %}
+          ```
+          
+          {% if parameters.setupType === 'advanced' %}
+          ### Testing
+          
+          ```bash
+          # Run tests
+          npm test
+          
+          # Run tests in watch mode
+          npm run test:watch
+          
+          # Run tests with coverage
+          npm run test:coverage
+          
+          # Run linting
+          npm run lint
+          
+          # Fix linting issues
+          npm run lint:fix
+          ```
+          {% endif %}
+          
+          ### API Endpoints
+          
+          {% if parameters.setupType === 'advanced' %}
+          - `GET /` - Welcome message
+          - `GET /health` - Health check endpoint
+          {% endif %}
+          
+          ## Project Structure
+          
+          ```
+          ${{ parameters.name }}/
+          ├── src/
+          │   └── index.js
+          {% if parameters.setupType === 'advanced' %}
+          ├── tests/
+          │   ├── unit/
+          │   └── integration/
+          ├── docs/
+          ├── config/
+          {% endif %}
+          {% if parameters.setupType === 'docker' %}
+          ├── Dockerfile
+          ├── docker-compose.yml
+          ├── .dockerignore
+          {% endif %}
+          ├── package.json
+          └── README.md
+          ```
+          
+          ## Contributing
+          
+          1. Fork the repository
+          2. Create a feature branch
+          3. Make your changes
+          4. Add tests
+          5. Run the test suite
+          6. Submit a pull request
+          
+          ## License
+          
+          ISC
+          EOF
+          
+          echo "README.md created successfully!"
+        workingDirectory: .
+        timeout: 30000
+
+    - id: git-init
+      name: Initialize Git Repository
+      action: shell:execute
+      input:
+        script: |
+          echo "Initializing Git repository..."
+          
+          # Initialize git
+          git init
+          
+          # Create .gitignore
+          cat > .gitignore << 'EOF'
+          # Dependencies
+          node_modules/
+          npm-debug.log*
+          yarn-debug.log*
+          yarn-error.log*
+          
+          # Runtime data
+          pids
+          *.pid
+          *.seed
+          *.pid.lock
+          
+          # Coverage directory used by tools like istanbul
+          coverage/
+          .nyc_output
+          
+          # Environment variables
+          .env
+          .env.local
+          .env.development.local
+          .env.test.local
+          .env.production.local
+          
+          # Logs
+          logs
+          *.log
+          
+          # OS generated files
+          .DS_Store
+          .DS_Store?
+          ._*
+          .Spotlight-V100
+          .Trashes
+          ehthumbs.db
+          Thumbs.db
+          
+          # IDE files
+          .vscode/
+          .idea/
+          *.swp
+          *.swo
+          *~
+          
+          # Temporary files
+          tmp/
+          temp/
+          EOF
+          
+          # Add all files
+          git add .
+          
+          # Create initial commit
+          git commit -m "Initial commit: Add ${{ parameters.name }} (${{ parameters.setupType }} setup)"
+          
+          echo "Git repository initialized with initial commit!"
+        workingDirectory: .
+        timeout: 30000
+
+  output:
+    text:
+      - title: Setup Summary
+        content: |
+          ## Project Setup Complete! 🎉
+          
+          **Project Name:** ${{ parameters.name }}
+          **Setup Type:** ${{ parameters.setupType }}
+          **Dependencies Installed:** ${{ parameters.installDependencies }}
+          **Tests Run:** ${{ parameters.runTests }}
+          
+          ### Next Steps:
+          
+          1. Navigate to your project directory
+          2. {% if parameters.setupType === 'docker' %}Start the application with `docker-compose up`{% else %}Start the application with `npm start`{% endif %}
+          3. {% if parameters.setupType === 'advanced' %}Visit http://localhost:3000 to see your API{% else %}Check the console output{% endif %}
+          4. Begin developing your application!
+          
+          ### Useful Commands:
+          
+          ```bash
+          cd ${{ parameters.name }}
+          {% if parameters.setupType === 'advanced' %}
+          npm run dev          # Start in development mode
+          npm test             # Run tests
+          npm run lint         # Check code style
+          {% endif %}
+          {% if parameters.setupType === 'docker' %}
+          docker-compose up    # Start with Docker
+          docker-compose down  # Stop Docker containers
+          {% endif %}
+          ```

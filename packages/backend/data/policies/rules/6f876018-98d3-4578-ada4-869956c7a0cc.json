@@ -1,0 +1,41 @@
+{
+  "id": "6f876018-98d3-4578-ada4-869956c7a0cc",
+  "name": "Guest Catalog Entity Read",
+  "description": "Allow guest users to read catalog entities",
+  "resource": "catalog-entity",
+  "actions": [
+    "read"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 100,
+    "category": "guest-access",
+    "tags": [
+      "guest",
+      "catalog",
+      "read-only"
+    ],
+    "createdAt": "2025-06-13T15:23:09.007Z",
+    "updatedAt": "2025-06-13T15:23:09.007Z"
+  }
+}

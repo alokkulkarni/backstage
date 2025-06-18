@@ -1,0 +1,254 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: spring-boot-jenkins-template
+  title: Spring Boot Microservice with Jenkins CI/CD
+  description: Create a production-ready Spring Boot microservice with comprehensive Jenkins pipelines for build, test, security scanning, and deployment
+  tags:
+    - recommended
+    - java
+    - spring-boot
+    - jenkins
+    - ci-cd
+    - microservice
+    - kubernetes
+spec:
+  owner: platform-team
+  type: microservice
+  parameters:
+    - title: Application Information
+      required:
+        - name
+        - description
+        - owner
+      properties:
+        name:
+          title: Service Name
+          type: string
+          pattern: '^[a-z0-9-]+$'
+          description: Name of the Spring Boot service (lowercase, hyphens allowed)
+          ui:autofocus: true
+          ui:help: 'This will be used as the artifact ID and package name'
+        description:
+          title: Description
+          type: string
+          description: A brief description of the microservice
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component (team/individual)
+          ui:field: OwnerPicker
+          ui:options:
+            allowedKinds:
+              - Group
+              - User
+
+    - title: Spring Boot Configuration
+      properties:
+        javaVersion:
+          title: Java Version
+          type: string
+          description: Java version to use
+          default: '17'
+          enum:
+            - '11'
+            - '17'
+            - '21'
+        springBootVersion:
+          title: Spring Boot Version
+          type: string
+          description: Spring Boot version
+          default: '3.2.0'
+          enum:
+            - '2.7.18'
+            - '3.1.6'
+            - '3.2.0'
+        packaging:
+          title: Packaging
+          type: string
+          description: Maven packaging type
+          default: 'jar'
+          enum:
+            - 'jar'
+            - 'war'
+        dependencies:
+          title: Dependencies
+          type: array
+          description: Spring Boot dependencies to include
+          items:
+            type: string
+            enum:
+              - 'spring-boot-starter-web'
+              - 'spring-boot-starter-data-jpa'
+              - 'spring-boot-starter-security'
+              - 'spring-boot-starter-actuator'
+              - 'spring-boot-starter-test'
+              - 'spring-boot-starter-validation'
+              - 'spring-boot-starter-cache'
+              - 'spring-boot-starter-data-redis'
+              - 'spring-cloud-starter-netflix-eureka-client'
+              - 'spring-cloud-starter-config'
+          default:
+            - 'spring-boot-starter-web'
+            - 'spring-boot-starter-actuator'
+            - 'spring-boot-starter-test'
+
+    - title: Repository Configuration
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+              - gitlab.com
+              - bitbucket.org
+
+    - title: Jenkins Configuration
+      properties:
+        enableJenkins:
+          title: Enable Jenkins Pipelines
+          type: boolean
+          default: true
+          description: Create Jenkins jobs for CI/CD
+        jenkinsJobDescription:
+          title: Jenkins Job Description
+          type: string
+          default: 'CI/CD pipelines for Spring Boot microservice'
+          description: Description for Jenkins jobs
+          ui:widget: textarea
+        mavenGoals:
+          title: Maven Goals
+          type: string
+          default: 'clean verify'
+          description: Default Maven goals for build
+        enableSonarQube:
+          title: Enable SonarQube Analysis
+          type: boolean
+          default: true
+          description: Include SonarQube code quality analysis
+        sonarProjectKey:
+          title: SonarQube Project Key
+          type: string
+          description: SonarQube project key (will use service name if empty)
+
+    - title: Docker & Deployment Configuration
+      properties:
+        dockerRegistry:
+          title: Docker Registry
+          type: string
+          default: 'your-registry.com'
+          description: Docker registry URL for pushing images
+        baseImage:
+          title: Base Docker Image
+          type: string
+          default: 'openjdk:17-jre-slim'
+          description: Base Docker image for the application
+        kubernetesNamespace:
+          title: Kubernetes Namespace
+          type: string
+          default: 'default'
+          description: Target Kubernetes namespace for deployment
+        enablePrometheus:
+          title: Enable Prometheus Metrics
+          type: boolean
+          default: true
+          description: Enable Prometheus metrics and monitoring
+
+  steps:
+    - id: fetch
+      name: Fetch Spring Boot Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          javaVersion: ${{ parameters.javaVersion }}
+          springBootVersion: ${{ parameters.springBootVersion }}
+          packaging: ${{ parameters.packaging }}
+          dependencies: ${{ parameters.dependencies }}
+          mavenGoals: ${{ parameters.mavenGoals }}
+          dockerRegistry: ${{ parameters.dockerRegistry }}
+          baseImage: ${{ parameters.baseImage }}
+          kubernetesNamespace: ${{ parameters.kubernetesNamespace }}
+          enablePrometheus: ${{ parameters.enablePrometheus }}
+          enableSonarQube: ${{ parameters.enableSonarQube }}
+          sonarProjectKey: ${{ parameters.sonarProjectKey || parameters.name }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+
+    - id: publish
+      name: Publish Repository
+      action: publish:github
+      input:
+        allowedHosts:
+          - github.com
+          - gitlab.com
+          - bitbucket.org
+        description: ${{ parameters.description }}
+        repoUrl: ${{ parameters.repoUrl }}
+        defaultBranch: main
+        sourcePath: .
+        gitCommitMessage: 'Initial commit: Spring Boot microservice with Jenkins CI/CD'
+        gitAuthorName: 'Backstage Scaffolder'
+        gitAuthorEmail: 'scaffolder@backstage.io'
+
+    - id: jenkins-jobs
+      name: Create Jenkins Jobs
+      if: ${{ parameters.enableJenkins }}
+      action: jenkins:create-job
+      input:
+        artifactId: ${{ parameters.name }}
+        skeletonPath: ./skeleton
+        description: ${{ parameters.jenkinsJobDescription }}
+        parameters:
+          DOCKER_REGISTRY: ${{ parameters.dockerRegistry }}
+          K8S_NAMESPACE: ${{ parameters.kubernetesNamespace }}
+          GIT_REPO_URL: ${{ steps.publish.output.remoteUrl }}
+          MAVEN_GOALS: ${{ parameters.mavenGoals }}
+          SONAR_PROJECT_KEY: ${{ parameters.sonarProjectKey || parameters.name }}
+
+    - id: register
+      name: Register in Software Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: '/catalog-info.yaml'
+
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps.publish.output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}
+      - title: Jenkins Jobs
+        condition: ${{ parameters.enableJenkins }}
+        url: ${{ steps.jenkins-jobs.output.createdJobs[0].url | default('') }}
+    text:
+      - title: Spring Boot Application Created
+        content: |
+          Your Spring Boot microservice **${{ parameters.name }}** has been created successfully!
+          
+          ## What's included:
+          - ☕ Spring Boot ${{ parameters.springBootVersion }} with Java ${{ parameters.javaVersion }}
+          - 🏗️ Maven build configuration with dependencies
+          - 🐳 Docker configuration for containerization
+          - ☸️ Kubernetes deployment manifests
+          - 🔧 Jenkins CI/CD pipelines (build, test, deploy)
+          - 📊 Actuator endpoints for monitoring
+          - 🔒 Security configuration and scanning
+          - 📈 Prometheus metrics (if enabled)
+          
+          ## Next steps:
+          1. Clone the repository: `git clone ${{ steps.publish.output.remoteUrl }}`
+          2. Review the generated code and configuration
+          3. Customize application properties in `src/main/resources/application.yml`
+          4. Build locally: `mvn clean verify`
+          5. Run the application: `mvn spring-boot:run`
+          
+          The Jenkins pipelines will handle building, testing, security scanning, and deployment to Kubernetes.

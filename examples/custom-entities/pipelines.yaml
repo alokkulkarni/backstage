@@ -1,0 +1,34 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: frontend-pipeline
+  description: Frontend build and deployment pipeline
+  annotations:
+    github.com/project-slug: example-org/frontend-app
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - github-actions
+    - frontend
+    - ci-cd
+spec:
+  type: ci-cd-pipeline
+  owner: group:frontend-team
+  system: product-system
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: backend-pipeline
+  description: Backend build and deployment pipeline
+  annotations:
+    github.com/project-slug: example-org/backend-service
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - github-actions
+    - backend
+    - ci-cd
+spec:
+  type: ci-cd-pipeline
+  owner: group:backend-team
+  system: product-system

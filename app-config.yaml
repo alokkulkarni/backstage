@@ -1,9 +1,13 @@
 app:
-  title: Scaffolded Backstage App
-  baseUrl: http://localhost:3000
-
-organization:
-  name: My Company
+  title: ${APP_TITLE}
+  baseUrl: ${APP_BASE_URL}
+  terraformEnvironments:
+    defaultOwner: ${TERRAFORM_DEFAULT_OWNER}
+    defaultRepo: ${TERRAFORM_DEFAULT_REPO}
+  organization:
+    name: ${APP_ORG_NAME}
+    profile:
+      url: ${APP_PROFILE_URL}
 
 backend:
   # Used for enabling authentication, secret is shared by all backend plugins
@@ -12,9 +16,9 @@ backend:
   # auth:
   #   keys:
   #     - secret: ${BACKEND_SECRET}
-  baseUrl: http://localhost:7007
+  baseUrl: ${APP_BACKEND_URL}
   listen:
-    port: 7007
+    port: ${APP_PORT}
     # Uncomment the following host directive to bind to specific interfaces
     # host: 127.0.0.1
   csp:
@@ -22,34 +26,92 @@ backend:
     # Content-Security-Policy directives follow the Helmet format: https://helmetjs.github.io/#reference
     # Default Helmet Content-Security-Policy values can be removed by setting the key to false
   cors:
-    origin: http://localhost:3000
+    origin: ['${APP_BASE_URL}', 'https://kitten-meet-impala.ngrok-free.app']
     methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
     credentials: true
   # This is for local development only, it is not recommended to use this in production
   # The production database configuration is stored in app-config.production.yaml
   database:
     client: better-sqlite3
-    connection: ':memory:'
+    connection:
+      directory: './db'
   # workingDirectory: /tmp # Use this to configure a working directory for the scaffolder, defaults to the OS temp-dir
+
+test:
+  value: "hello"
+
+terraformenvironments:
+  defaultowner: ${TERRAFORM_DEFAULT_OWNER}
+  defaultrepo: ${TERRAFORM_DEFAULT_REPO}
 
 integrations:
   github:
     - host: github.com
-      # This is a Personal Access Token or PAT from GitHub. You can find out how to generate this token, and more information
-      # about setting up the GitHub integration here: https://backstage.io/docs/integrations/github/locations#configuration
       token: ${GITHUB_TOKEN}
-    ### Example for how to add your GitHub Enterprise instance using the API:
-    # - host: ghe.example.net
-    #   apiBaseUrl: https://ghe.example.net/api/v3
-    #   token: ${GHE_TOKEN}
+      organizations:
+        - ${GITHUB_ORG_NAME}
+    - host: github.com
+      organization: ${GITHUB_ORG_NAME}
+      apiBaseUrl: ${GITHUB_COPILOT_URL}
+      rawBaseUrl: ${GITHUB_COPILOT_URL}
+      token: ${GITHUB_TOKEN}
 
+# Add proxy configuration for integrations
 proxy:
-  ### Example for how to add a proxy endpoint for the frontend.
-  ### A typical reason to do this is to handle HTTPS and CORS for internal services.
-  # endpoints:
-  #   '/test':
-  #     target: 'https://example.com'
-  #     changeOrigin: true
+  endpoints:
+    '/jenkins/api':
+      target: ${JENKINS_BASE_URL}
+      changeOrigin: true
+      allowedHeaders: ['Authorization', 'Content-Type']
+      headers:
+        Authorization: "Basic ${JENKINS_BASIC_AUTH}"
+    '/jenkins':
+      target: ${JENKINS_BASE_URL}
+      changeOrigin: true
+      allowedHeaders: ['Authorization', 'Content-Type', 'Accept']
+      headers:
+        Authorization: "Basic ${JENKINS_BASIC_AUTH}"
+    '/sonarqube':
+      target: ${SONARQUBE_BASE_URL}
+      changeOrigin: true
+      allowedHeaders: ['Authorization', 'Content-Type']
+      headers:
+        Authorization: "Bearer ${SONARQUBE_BEARER_TOKEN}"
+        Content-Type: "application/x-www-form-urlencoded"
+    '/argocd/api':
+      target: https://argocd.example.com/api/v1
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${ARGOCD_AUTH_TOKEN}
+    '/jira/api':
+      target: ${JIRA_BASE_URL}
+      changeOrigin: true
+      allowedHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Atlassian-Token', 'User-Agent']
+      headers:
+        Authorization: "${JIRA_API_TOKEN}"
+        Accept: 'application/json'
+        Content-Type: 'application/json'
+        X-Atlassian-Token: 'nocheck'
+        User-Agent: "Backstage"
+    '/confluence/api':
+      target: ${CONFLUENCE_BASE_URL}
+      changeOrigin: true
+      headers:
+        Authorization: "${CONFLUENCE_API_TOKEN}"
+        Accept: 'application/json'
+        Content-Type: 'application/json'
+        X-Atlassian-Token: no-check
+        User-Agent: 'Backstage'
+    '/nexus-iq/api':
+      target: ${NEXUS_IQ_SERVER_URL}/api
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${NEXUS_IQ_AUTH}
+    '/launchdarkly/api':
+      target: ${LAUNCHDARKLY_API_URL}
+      changeOrigin: true
+      headers:
+        Authorization: ${LAUNCHDARKLY_API_KEY}
 
 # Reference documentation http://backstage.io/docs/features/techdocs/configuration
 # Note: After experimenting with basic setup, use CI/CD to generate docs
@@ -64,27 +126,143 @@ techdocs:
 
 auth:
   # see https://backstage.io/docs/auth/ to learn about auth providers
+  environment: development
   providers:
     # See https://backstage.io/docs/auth/guest/provider
     guest: {}
+    github:
+      development:
+        # This is a Personal Access Token or PAT from GitHub. You can find out how to generate this token, and more information
+        # about setting up the GitHub integration here: https://backstage.io/docs/integrations/github/locations#configuration
+        # token: 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
+        clientId: ${GITHUB_CLIENT_ID}
+        clientSecret: ${GITHUB_CLIENT_SECRET}
+        appId: ${GITHUB_APP_ID}
+        privateKey: | 
+          ${GITHUB_APP_PRIVATE_KEY}
+        installationId: ${GITHUB_APP_INSTALLATION_ID}
+        signIn:
+          resolvers:
+            # Matches the GitHub username with the Backstage user entity name.
+            - resolver: usernameMatchingUserEntityName
+            # - resolver: userEntityMatchingAnnotation
+            #   options:
+            #     # This will match the GitHub username against the github.com/user-login annotation of entity
+            #     annotation: github.com/user-login
+    
+    microsoft:
+      development:
+        clientId: ${AZURE_CLIENT_ID}
+        clientSecret: ${AZURE_CLIENT_SECRET}
+        tenantId: ${AZURE_TENANT_ID}
+        domainHint: ${AZURE_TENANT_ID}
+        signIn:
+          resolvers:
+            # See https://backstage.io/docs/auth/microsoft/provider#resolvers for more resolvers
+            - resolver: userIdMatchingUserEntityAnnotation
 
 scaffolder:
   # see https://backstage.io/docs/features/software-templates/configuration for software template options
+  defaultAuthor:
+    name: ${SCAFFOLDER_DEFAULT_AUTHOR_NAME}
+    email: ${SCAFFOLDER_DEFAULT_AUTHOR_EMAIL}
+  
+  # Global environment variables for all scaffolder actions
+  environment:
+    # Common build and deployment variables
+    NODE_ENV: ${NODE_ENV}
+    DOCKER_REGISTRY: ${DOCKER_REGISTRY}
+    HELM_REPO_URL: ${HELM_REPO_URL}
+    
+    # Platform specific variables
+    PLATFORM_NAME: ${PLATFORM_NAME}
+    PLATFORM_OWNER: ${PLATFORM_OWNER}
+    PLATFORM_ENVIRONMENT: ${PLATFORM_ENVIRONMENT}
+  
+  # Action-specific environment variables
+  actions:
+    shell:execute:
+      environment:
+        # Shell-specific variables
+        SHELL_TIMEOUT_DEFAULT: "${SHELL_TIMEOUT_DEFAULT}"
+        SHELL_LOG_OUTPUT: "${SHELL_LOG_OUTPUT}"
+        SHELL_ENCODING: "${SHELL_ENCODING}"
+        
+        # Build tool specific variables
+        MAVEN_OPTS: "${MAVEN_OPTS}"
+        GRADLE_OPTS: "${GRADLE_OPTS}"
+        NPM_CONFIG_REGISTRY: "${NPM_CONFIG_REGISTRY}"
+        
+        # Docker build variables
+        DOCKER_BUILDKIT: "${DOCKER_BUILDKIT}"
+        BUILDKIT_PROGRESS: "${BUILDKIT_PROGRESS}"
+        
+        # Kubernetes variables
+        KUBECTL_TIMEOUT: "${KUBECTL_TIMEOUT}"
+        HELM_TIMEOUT: "${HELM_TIMEOUT}"
 
 catalog:
+  providers:
+    github:
+      # the provider ID can be any camelCase string
+      githubOrgGuestsMaster:
+        organization: '${GITHUB_ORG_NAME}' # string
+        catalogPath: '/catalog-info.yaml' # string
+        filters:
+          repository: '.*' # Regex
+          repositoryVisibility: public
+        schedule: # same options as in SchedulerServiceTaskScheduleDefinition
+          # supports cron, ISO duration, "human duration" as used in code
+          initialDelay: { seconds: 60 }
+          frequency: { minutes: 120 }
+          # supports ISO duration, "human duration" as used in code
+          timeout: { minutes: 3 } 
   import:
     entityFilename: catalog-info.yaml
-    pullRequestBranchName: backstage-integration
+    pullRequestBranchName: ${GITHUB_ORG_NAME}/*
   rules:
-    - allow: [Component, System, API, Resource, Location]
+    - allow: [Component, System, API, Resource, Location, Group, User, Template]
   locations:
     # Local example data, file locations are relative to the backend process, typically `packages/backend`
+    - type: url
+      target: ${GITHUB_TEMPLATE_REPO}
+      rules:
+        - allow: [Template]
+    # - type: github-discovery
+    #   target: https://github.com/alokkulkarni
+    #   rules:
+    #     - allow: [Component, System, API, Resource, Location, User, Group]
+    #     - pattern: '*/catalog-info.yaml'
+    # - type: github-discovery
+    #   target: https://github.com/productsandchannel
+    #   rules:
+    #     - allow: [Component, System, API, Resource, Location, User, Group]
+    #     - pattern: '*/catalog-info.yaml'
     - type: file
       target: ../../examples/entities.yaml
+    # Custom entities for more structured organization
+    - type: file
+      target: ../../examples/custom-entities/databases.yaml
+      rules:
+        - allow: [Resource]
+    - type: file
+      target: ../../examples/custom-entities/pipelines.yaml
+      rules:
+        - allow: [Resource]
+    - type: file
+      target: ../../examples/custom-entities/environments.yaml
+      rules:
+        - allow: [Resource]
 
     # Local example template
     - type: file
       target: ../../examples/template/template.yaml
+      rules:
+        - allow: [Template]
+        
+    # Jira metadata annotations template
+    - type: file
+      target: ../../examples/jira-template/template.yaml
       rules:
         - allow: [Template]
 
@@ -95,8 +273,8 @@ catalog:
         - allow: [User, Group]
 
     ## Uncomment these lines to add more example data
-    # - type: url
-    #   target: https://github.com/backstage/backstage/blob/master/packages/catalog-model/examples/all.yaml
+    - type: url
+      target: https://github.com/backstage/backstage/blob/master/packages/catalog-model/examples/all.yaml
 
     ## Uncomment these lines to add an example org
     # - type: url
@@ -107,10 +285,232 @@ catalog:
   # New adopters are encouraged to enable it as this behavior will be the default in a future release.
   useUrlReadersSearch: true
 
-kubernetes:
+# kubernetes:
   # see https://backstage.io/docs/features/kubernetes/configuration for kubernetes configuration options
 
 # see https://backstage.io/docs/permissions/getting-started for more on the permission framework
 permission:
-  # setting this to `false` will disable permissions
   enabled: true
+  # Configuration for enhanced permission policy
+  policy:
+    # Require authentication for all routes - no unauthenticated access
+    defaultHttpAuth: 'required'  # Require authentication for all access
+    
+    # Guest user access is now policy-based (see fallback-rbac-policy.yaml)
+    # No hardcoded permissions - all guest access is managed through RBAC policies
+    
+    storage:
+      type: filesystem
+      path: ./data/policies
+    opa:
+      enabled: false
+    defaultTemplates: true
+    evaluation:
+      cacheEnabled: true
+      cacheTtl: 300
+      parallelEvaluation: true
+  
+  # Analytics and monitoring
+  analytics:
+    enabled: true
+  
+  permissionedPlugins:
+    - catalog
+    - scaffolder
+    - techdocs
+    - kubernetes
+    - permissions
+    - auth
+    - integrations.github
+    - integrations.jenkins
+    - integrations.sonarqube
+    - integrations.jira
+    - integrations.confluence
+    - integrations.argocd
+    - integrations.dynatrace
+    - integrations.nexus-iq
+    - integrations.launchdarkly
+    - integrations.terraformenvironments
+    - integrations.proxy
+    - integrations.gitlab
+    - integrations.azure
+    - integrations.microsoft
+    - integrations.git
+    - integrations.bitbucket
+    - integrations.gitops
+    - integrations.terraform
+    - integrations.terraformCloud
+    - integrations.terraformEnterprise
+    - integrations.terraformProviders
+    - integrations.terraformState
+    - integrations.terraformModules
+  rbac:
+    authorizedUsers:
+      - group:default/platform-team
+      - group:default/productsandchannel
+      - user:default/alokkulkarni
+
+# Custom permissions plugin configuration
+# permissions:
+#   database:
+#     type: sqlite
+#   realtime:
+#     enabled: true
+#   adminUsers:
+#     - alokkulkarni@virginmoney.com
+#     - kulkarni.alok@gmail.com
+#     - admin@example.com
+#     - user:default/alokkulkarni
+#     - alokkulkarni
+
+techRadar:
+  enabled: true
+  # The radar is a static file, so we can use a simple file reader
+  reader:
+    type: file
+    target: ./radar.json
+  # The radar is a static file, so we can use a simple file writer
+  writer:
+    type: file
+    target: ./radar.json
+  url: ${GITHUB_COPILOT_URL}
+
+copilot:
+  enabled: true
+  # The Copilot plugin is used for AI assistance in Backstage
+  # It can be configured to use different AI providers
+  provider:
+    type: openai
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o
+  host: github.com
+  organization: ${GITHUB_ORG_NAME}
+  url: ${GITHUB_COPILOT_URL}
+
+# jenkins configuration
+jenkins:
+  baseUrl: ${JENKINS_BASE_URL}
+  changeOrigin: true
+  username: ${JENKINS_USERNAME}
+  projectCountLimit: 100
+  apiKey: ${JENKINS_API_KEY}
+
+sonarqube:
+  instanceKey: ${SONARQUBE_INSTANCE_KEY}
+  changeOrigin: true
+  username: ${SONARQUBE_USERNAME}
+  baseUrl: ${SONARQUBE_BASE_URL}
+  apiKey: ${SONARQUBE_API_KEY}
+
+jira:
+  annotationPrefix: jira
+  changeOrigin: true
+  proxy-paths:
+    - /jira/api
+  instances:
+    - name: default
+      baseUrl: ${JIRA_BASE_URL}
+      # The token will be used from the proxy configuration
+      apiToken: "${JIRA_API_TOKEN}"
+      email: "${JIRA_EMAIL}"
+      # You can add default filters here
+      defaultFilters:
+        - name: 'My Issues'
+          shortName: 'Assigned'
+          query: 'assignee = currentUser() ORDER BY updated DESC'
+        - name: 'Reported By Me'
+          shortName: 'Created'
+          query: 'reporter = currentUser() ORDER BY created DESC'
+
+# Jira Trends configuration for sprint metrics and analytics
+jiraTrends:
+  # Mock data configuration
+  useMockData: true # Set to true to use mock data instead of querying Jira
+  
+  # Jira connection settings
+  jira:
+    baseUrl: ${JIRA_BASE_URL}
+    apiToken: ${JIRA_API_TOKEN}
+    email: ${JIRA_EMAIL}
+  refreshInterval: '0 */6 * * *' # Every 6 hours (cron format)
+  defaultBoard: 1 # Default board ID to use if none specified
+  
+  # Dynamic board selection strategy
+  boardSelectionStrategy: 'userFirstBoard' # Options: 'userFirstBoard', 'defaultBoard', 'allBoards'
+  benchmarks:
+    velocity:
+      target: 50 # Story points per sprint
+      warning: 30 # Below this is warning
+    completionRatio:
+      target: 0.85 # 85% completion rate
+      warning: 0.70 # Below 70% is warning
+    churnRate:
+      target: 0.15 # Max 15% churn
+      warning: 0.25 # Above 25% is warning
+    bugCount:
+      target: 2 # Max 2 bugs per sprint
+      warning: 5 # Above 5 is warning
+    teamSize:
+      target: 7 # Optimal team size
+      warning: 10 # Above 10 or below 3 is warning
+      minimum: 3
+    teamChangeRate:
+      target: 0.10 # Max 10% team change per sprint
+      warning: 0.20 # Above 20% is warning
+
+# Source Control Trends configuration for repository metrics and compliance
+sourceControlTrends:
+  # Mock data configuration
+  useMockData: true # Set to true to use mock data instead of querying GitHub
+  
+  # GitHub connection settings
+  github:
+    token: ${GITHUB_TOKEN}
+    organizations:
+      - ${GITHUB_ORG_NAME}
+  refreshInterval: '0 */12 * * *' # Every 12 hours (cron format)
+  
+  # Benchmarks and thresholds
+  benchmarks:
+    timeToMergePR:
+      target: 24 # Hours
+      warning: 72 # Above 72 hours is warning
+    reviewCoverage:
+      target: 80 # Percentage
+      warning: 60 # Below 60% is warning
+    vulnerabilityCount:
+      target: 0 # No open vulnerabilities
+      warning: 5 # Above 5 is warning
+    stalePRRatio:
+      target: 0.10 # Max 10% stale PRs
+      warning: 0.25 # Above 25% is warning
+    branchProtection:
+      target: true # Branch protection enabled
+      warning: false # Not enabled is warning
+
+confluence:
+  annotationPrefix: confluence
+  changeOrigin: true
+  proxy-paths:
+    - /confluence/api
+
+argocd:
+  username: ${ARGOCD_USERNAME}
+  password: ${ARGOCD_PASSWORD}
+  proxy-paths:
+    - /argocd/api
+
+dynatrace:
+  baseUrl: ${DYNATRACE_BASE_URL}
+  environments:
+    - name: dynatrace
+      url: ${DYNATRACE_SERVER_URL}
+      tokenUrl: ${DYNATRACE_TOKEN_URL}
+      accountUrn: ${DYNATRACE_ACCOUNT_URN}
+      clientId: ${DYNATRACE_CLIENT_ID}
+      clientSecret: ${DYNATRACE_CLIENT_SECRET}
+  queries:
+    - id: davis-events
+      description: Fetches all Davis events
+      query: >
+        fetch events | filter event.kind == "DAVIS_EVENT" | fields event.kind, timestamp

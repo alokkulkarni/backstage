@@ -1,0 +1,137 @@
+/* filepath: src/components/Header/Header.css */
+.header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.header-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 4rem;
+}
+
+.header-logo .logo-link {
+  text-decoration: none;
+  color: white;
+}
+
+.header-logo h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: white;
+}
+
+.header-nav {
+  flex-grow: 1;
+  margin: 0 2rem;
+}
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 2rem;
+}
+
+.nav-item {
+  margin: 0;
+}
+
+.nav-link {
+  color: white;
+  text-decoration: none;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  transition: background-color 0.2s ease;
+}
+
+.nav-link:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.user-greeting {
+  color: white;
+  font-weight: 500;
+}
+
+.auth-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 0.25rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-block;
+  text-align: center;
+}
+
+.btn-primary {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: #d97706;
+}
+
+.btn-secondary {
+  background-color: transparent;
+  color: white;
+  border: 1px solid white;
+}
+
+.btn-secondary:hover {
+  background-color: white;
+  color: #667eea;
+}
+
+@media (max-width: 768px) {
+  .header-container {
+    padding: 0 1rem;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 4rem;
+  }
+
+  .header-nav {
+    order: 3;
+    flex-basis: 100%;
+    margin: 0.5rem 0;
+  }
+
+  .nav-list {
+    justify-content: center;
+  }
+
+  .user-greeting {
+    display: none;
+  }
+}

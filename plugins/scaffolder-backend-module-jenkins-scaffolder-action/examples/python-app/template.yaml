@@ -1,0 +1,436 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: python-app-jenkins
+  title: Python Application with Jenkins CI/CD
+  description: |
+    Create a production-ready Python application with comprehensive Jenkins CI/CD pipelines.
+    Includes FastAPI/Django/Flask support, testing, security scanning, containerization, 
+    and deployment automation with multiple pipeline strategies.
+  tags:
+    - python
+    - jenkins
+    - cicd
+    - docker
+    - kubernetes
+    - fastapi
+    - django
+    - flask
+    - pytest
+    - security
+spec:
+  owner: platform-team
+  type: service
+  parameters:
+    - title: Basic Information
+      required:
+        - name
+        - description
+        - owner
+      properties:
+        name:
+          title: Name
+          type: string
+          description: Unique name of the component
+          pattern: '^([a-z0-9\-]+)$'
+          ui:autofocus: true
+          ui:help: 'Use lowercase letters, numbers, and hyphens only'
+        description:
+          title: Description
+          type: string
+          description: Help others understand what this service is for
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component (team or individual)
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: [Group, User]
+
+    - title: Python Configuration
+      required:
+        - pythonVersion
+        - framework
+      properties:
+        pythonVersion:
+          title: Python Version
+          type: string
+          description: Python version for the application
+          default: '3.11'
+          enum:
+            - '3.8'
+            - '3.9'
+            - '3.10'
+            - '3.11'
+            - '3.12'
+          enumNames:
+            - 'Python 3.8'
+            - 'Python 3.9'
+            - 'Python 3.10'
+            - 'Python 3.11'
+            - 'Python 3.12'
+        framework:
+          title: Python Framework
+          type: string
+          description: Primary framework for the application
+          default: fastapi
+          enum:
+            - fastapi
+            - django
+            - flask
+            - none
+          enumNames:
+            - 'FastAPI (Modern, async API framework)'
+            - 'Django (Full-featured web framework)'
+            - 'Flask (Lightweight web framework)'
+            - 'None (Custom/CLI application)'
+        packageManager:
+          title: Package Manager
+          type: string
+          description: Python package manager to use
+          default: pip
+          enum:
+            - pip
+            - poetry
+            - pipenv
+          enumNames:
+            - 'pip + requirements.txt'
+            - 'Poetry (Modern dependency management)'
+            - 'Pipenv (Virtual environment + packaging)'
+        includeCelery:
+          title: Include Celery
+          type: boolean
+          description: Add Celery for asynchronous task processing
+          default: false
+        includeDatabase:
+          title: Include Database Support
+          type: boolean
+          description: Add database models and migrations
+          default: true
+
+    - title: Testing & Quality
+      properties:
+        testFramework:
+          title: Test Framework
+          type: string
+          description: Testing framework to use
+          default: pytest
+          enum:
+            - pytest
+            - unittest
+            - nose2
+          enumNames:
+            - 'pytest (Recommended)'
+            - 'unittest (Built-in)'
+            - 'nose2 (Extended unittest)'
+        includeTyping:
+          title: Include Type Hints
+          type: boolean
+          description: Add mypy for static type checking
+          default: true
+        includeLinting:
+          title: Include Code Linting
+          type: boolean
+          description: Add flake8, black, and isort for code quality
+          default: true
+        testCoverage:
+          title: Test Coverage Threshold
+          type: number
+          description: Minimum test coverage percentage required
+          default: 80
+          minimum: 0
+          maximum: 100
+
+    - title: Jenkins Configuration
+      required:
+        - jenkinsUrl
+        - credentialsId
+      properties:
+        jenkinsUrl:
+          title: Jenkins Server URL
+          type: string
+          description: URL of your Jenkins server
+          default: 'https://jenkins.company.com'
+        credentialsId:
+          title: Jenkins Credentials ID
+          type: string
+          description: Jenkins credentials ID for authentication
+          default: 'jenkins-api-token'
+        enableWebhooks:
+          title: Enable Git Webhooks
+          type: boolean
+          description: Configure automatic builds on git push
+          default: true
+        parallelBuilds:
+          title: Enable Parallel Builds
+          type: boolean
+          description: Allow multiple builds to run simultaneously
+          default: true
+        buildRetention:
+          title: Build Retention Days
+          type: number
+          description: Number of days to keep build artifacts
+          default: 30
+          minimum: 1
+          maximum: 365
+
+    - title: Security & Scanning
+      properties:
+        enableSecurityScanning:
+          title: Enable Security Scanning
+          type: boolean
+          description: Include security vulnerability scanning (Safety, Bandit)
+          default: true
+        enableDependencyCheck:
+          title: Enable Dependency Scanning
+          type: boolean
+          description: Scan for known security vulnerabilities in dependencies
+          default: true
+        enableSecretsScanning:
+          title: Enable Secrets Scanning
+          type: boolean
+          description: Scan for accidentally committed secrets
+          default: true
+        sonarQubeUrl:
+          title: SonarQube Server URL
+          type: string
+          description: URL of SonarQube server for code quality analysis
+        sonarQubeToken:
+          title: SonarQube Token
+          type: string
+          description: SonarQube authentication token credential ID
+          default: 'sonarqube-token'
+
+    - title: Container & Deployment
+      properties:
+        enableDocker:
+          title: Enable Docker
+          type: boolean
+          description: Create Docker images for the application
+          default: true
+        dockerRegistry:
+          title: Docker Registry
+          type: string
+          description: Docker registry for storing images
+          default: 'docker.company.com'
+        dockerNamespace:
+          title: Docker Namespace
+          type: string
+          description: Docker registry namespace/organization
+          default: 'apps'
+        enableKubernetes:
+          title: Enable Kubernetes Deployment
+          type: boolean
+          description: Deploy to Kubernetes clusters
+          default: true
+        kubernetesNamespace:
+          title: Kubernetes Namespace
+          type: string
+          description: Target Kubernetes namespace
+          default: 'default'
+
+    - title: Environment Configuration
+      properties:
+        environments:
+          title: Deployment Environments
+          type: array
+          description: List of environments for deployment
+          default:
+            - dev
+            - staging
+            - prod
+          items:
+            type: string
+            enum:
+              - dev
+              - test
+              - staging
+              - prod
+              - sandbox
+        enableBlueGreen:
+          title: Enable Blue-Green Deployment
+          type: boolean
+          description: Use blue-green deployment strategy
+          default: true
+        enableCanary:
+          title: Enable Canary Deployment
+          type: boolean
+          description: Use canary deployment strategy
+          default: false
+        healthCheckPath:
+          title: Health Check Path
+          type: string
+          description: Application health check endpoint
+          default: '/health'
+
+    - title: Monitoring & Observability
+      properties:
+        enablePrometheus:
+          title: Enable Prometheus Metrics
+          type: boolean
+          description: Add Prometheus metrics collection
+          default: true
+        enableJaeger:
+          title: Enable Distributed Tracing
+          type: boolean
+          description: Add Jaeger tracing support
+          default: false
+        enableELK:
+          title: Enable ELK Stack Integration
+          type: boolean
+          description: Configure logging for Elasticsearch/Logstash/Kibana
+          default: true
+        logLevel:
+          title: Default Log Level
+          type: string
+          description: Default application log level
+          default: INFO
+          enum:
+            - DEBUG
+            - INFO
+            - WARNING
+            - ERROR
+            - CRITICAL
+
+    - title: Repository Information
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+              - gitlab.com
+              - bitbucket.org
+
+  steps:
+    - id: template
+      name: Fetch Skeleton + Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+        copyWithoutTemplating:
+          - .github/workflows/*
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          pythonVersion: ${{ parameters.pythonVersion }}
+          framework: ${{ parameters.framework }}
+          packageManager: ${{ parameters.packageManager }}
+          includeCelery: ${{ parameters.includeCelery }}
+          includeDatabase: ${{ parameters.includeDatabase }}
+          testFramework: ${{ parameters.testFramework }}
+          includeTyping: ${{ parameters.includeTyping }}
+          includeLinting: ${{ parameters.includeLinting }}
+          testCoverage: ${{ parameters.testCoverage }}
+          jenkinsUrl: ${{ parameters.jenkinsUrl }}
+          credentialsId: ${{ parameters.credentialsId }}
+          enableWebhooks: ${{ parameters.enableWebhooks }}
+          parallelBuilds: ${{ parameters.parallelBuilds }}
+          buildRetention: ${{ parameters.buildRetention }}
+          enableSecurityScanning: ${{ parameters.enableSecurityScanning }}
+          enableDependencyCheck: ${{ parameters.enableDependencyCheck }}
+          enableSecretsScanning: ${{ parameters.enableSecretsScanning }}
+          sonarQubeUrl: ${{ parameters.sonarQubeUrl }}
+          sonarQubeToken: ${{ parameters.sonarQubeToken }}
+          enableDocker: ${{ parameters.enableDocker }}
+          dockerRegistry: ${{ parameters.dockerRegistry }}
+          dockerNamespace: ${{ parameters.dockerNamespace }}
+          enableKubernetes: ${{ parameters.enableKubernetes }}
+          kubernetesNamespace: ${{ parameters.kubernetesNamespace }}
+          environments: ${{ parameters.environments }}
+          enableBlueGreen: ${{ parameters.enableBlueGreen }}
+          enableCanary: ${{ parameters.enableCanary }}
+          healthCheckPath: ${{ parameters.healthCheckPath }}
+          enablePrometheus: ${{ parameters.enablePrometheus }}
+          enableJaeger: ${{ parameters.enableJaeger }}
+          enableELK: ${{ parameters.enableELK }}
+          logLevel: ${{ parameters.logLevel }}
+          repoUrl: ${{ parameters.repoUrl }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+
+    - id: publish
+      name: Publish to Repository
+      action: publish:github
+      input:
+        allowedHosts: ['github.com']
+        description: This is ${{ parameters.name }}
+        repoUrl: ${{ parameters.repoUrl }}
+
+    - id: create-jenkins-job
+      name: Create Jenkins Build Job
+      action: jenkins:create-job
+      input:
+        jenkinsUrl: ${{ parameters.jenkinsUrl }}
+        credentialsId: ${{ parameters.credentialsId }}
+        jobName: ${{ parameters.name }}-build
+        jobConfig:
+          scm:
+            git:
+              url: ${{ steps.publish.output.remoteUrl }}
+              branch: main
+          triggers:
+            - pollSCM: 'H/5 * * * *'
+          buildSteps:
+            - shell: |
+                echo "Jenkins Build Job created for ${{ parameters.name }}"
+                echo "Repository: ${{ steps.publish.output.remoteUrl }}"
+
+    - id: create-jenkins-release-job
+      name: Create Jenkins Release Job
+      action: jenkins:create-job
+      input:
+        jenkinsUrl: ${{ parameters.jenkinsUrl }}
+        credentialsId: ${{ parameters.credentialsId }}
+        jobName: ${{ parameters.name }}-release
+        jobConfig:
+          parameters:
+            - choice:
+                name: ENVIRONMENT
+                choices: ${{ parameters.environments }}
+                description: Target environment for deployment
+          buildSteps:
+            - shell: |
+                echo "Jenkins Release Job created for ${{ parameters.name }}"
+                echo "Target Environment: ${ENVIRONMENT}"
+
+    - id: create-jenkins-quality-job
+      name: Create Jenkins Quality Job
+      action: jenkins:create-job
+      input:
+        jenkinsUrl: ${{ parameters.jenkinsUrl }}
+        credentialsId: ${{ parameters.credentialsId }}
+        jobName: ${{ parameters.name }}-quality
+        jobConfig:
+          triggers:
+            - cron: 'H 2 * * *'  # Daily quality check
+          buildSteps:
+            - shell: |
+                echo "Jenkins Quality Job created for ${{ parameters.name }}"
+                echo "Running daily quality analysis"
+
+    - id: register
+      name: Register in Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: '/catalog-info.yaml'
+
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps.publish.output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}
+      - title: Jenkins Build Job
+        url: ${{ parameters.jenkinsUrl }}/job/${{ parameters.name }}-build
+      - title: Jenkins Release Job
+        url: ${{ parameters.jenkinsUrl }}/job/${{ parameters.name }}-release
+      - title: Jenkins Quality Job
+        url: ${{ parameters.jenkinsUrl }}/job/${{ parameters.name }}-quality

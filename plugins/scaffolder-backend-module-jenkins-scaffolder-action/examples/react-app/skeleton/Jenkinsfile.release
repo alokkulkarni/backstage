@@ -1,0 +1,402 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = "${params.DOCKER_REGISTRY ?: 'your-registry.com'}"
+        IMAGE_NAME = "${DOCKER_REGISTRY}/${{ values.name }}"
+        K8S_NAMESPACE = "${params.K8S_NAMESPACE ?: '${{ values.kubernetesNamespace }}'}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 45, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['staging', 'production'],
+            description: 'Target environment for deployment'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Docker image tag to deploy'
+        )
+        string(
+            name: 'DOCKER_REGISTRY',
+            defaultValue: '${{ values.dockerRegistry }}',
+            description: 'Docker registry URL'
+        )
+        string(
+            name: 'K8S_NAMESPACE',
+            defaultValue: '${{ values.kubernetesNamespace }}',
+            description: 'Kubernetes namespace'
+        )
+        booleanParam(
+            name: 'SKIP_SMOKE_TESTS',
+            defaultValue: false,
+            description: 'Skip smoke tests after deployment'
+        )
+        booleanParam(
+            name: 'AUTO_ROLLBACK',
+            defaultValue: true,
+            description: 'Enable automatic rollback on deployment failure'
+        )
+    }
+    
+    stages {
+        stage('Pre-deployment Checks') {
+            steps {
+                script {
+                    echo "🔍 Running pre-deployment validation"
+                    echo "🎯 Target Environment: ${params.ENVIRONMENT}"
+                    echo "🏷️ Image Tag: ${params.IMAGE_TAG}"
+                    echo "📦 Full Image: ${IMAGE_NAME}:${params.IMAGE_TAG}"
+                    echo "🎛️ Namespace: ${K8S_NAMESPACE}"
+                    
+                    // Verify image exists in registry
+                    sh """
+                        docker manifest inspect ${IMAGE_NAME}:${params.IMAGE_TAG} > /dev/null
+                        echo "✅ Docker image verified in registry"
+                    """
+                    
+                    // Check Kubernetes cluster connectivity
+                    sh """
+                        kubectl cluster-info
+                        kubectl get nodes
+                        echo "✅ Kubernetes cluster accessible"
+                    """
+                    
+                    // Verify namespace exists
+                    sh """
+                        kubectl get namespace ${K8S_NAMESPACE} || kubectl create namespace ${K8S_NAMESPACE}
+                        echo "✅ Namespace ${K8S_NAMESPACE} ready"
+                    """
+                }
+            }
+        }
+        
+        stage('Security Checks') {
+            parallel {
+                stage('Image Security Scan') {
+                    steps {
+                        echo "🔒 Running security scan on deployment image"
+                        sh """
+                            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\
+                            aquasec/trivy image --exit-code 0 --severity HIGH,CRITICAL \\
+                            --format table ${IMAGE_NAME}:${params.IMAGE_TAG}
+                        """
+                    }
+                }
+                
+                stage('Kubernetes Security Policies') {
+                    steps {
+                        echo "🛡️ Validating Kubernetes security policies"
+                        sh """
+                            # Check for required security contexts, resource limits, etc.
+                            kubectl auth can-i create deployments --namespace=${K8S_NAMESPACE}
+                            kubectl auth can-i create services --namespace=${K8S_NAMESPACE}
+                            echo "✅ Required permissions verified"
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Database Migration') {
+            when {
+                expression { return params.ENVIRONMENT == 'production' }
+            }
+            steps {
+                echo "🗄️ Running database migrations for production"
+                script {
+                    // Add your database migration logic here
+                    sh """
+                        echo "Running database migrations..."
+                        # kubectl run migration-job --image=${IMAGE_NAME}:${params.IMAGE_TAG} \\
+                        #   --restart=Never --namespace=${K8S_NAMESPACE} \\
+                        #   --command -- npm run migrate
+                        echo "✅ Database migrations completed"
+                    """
+                }
+            }
+        }
+        
+        stage('Blue-Green Deployment') {
+            steps {
+                script {
+                    echo "🔄 Starting Blue-Green deployment"
+                    
+                    // Save current deployment for rollback
+                    def currentImage = sh(
+                        script: """
+                            kubectl get deployment ${{ values.name }} -n ${K8S_NAMESPACE} \\
+                            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 'none'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.PREVIOUS_IMAGE = currentImage
+                    echo "💾 Previous image: ${env.PREVIOUS_IMAGE}"
+                    
+                    // Deploy new version
+                    sh """
+                        cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ values.name }}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${{ values.name }}
+    version: "${params.IMAGE_TAG}"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: ${{ values.name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ values.name }}
+        version: "${params.IMAGE_TAG}"
+    spec:
+      containers:
+      - name: app
+        image: ${IMAGE_NAME}:${params.IMAGE_TAG}
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "${params.ENVIRONMENT}"
+        - name: BUILD_NUMBER
+          value: "${env.BUILD_NUMBER}"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ values.name }}-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: ${{ values.name }}
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+  type: ClusterIP
+EOF
+                    """
+                }
+            }
+        }
+        
+        stage('Wait for Deployment') {
+            steps {
+                echo "⏳ Waiting for deployment to complete"
+                sh """
+                    kubectl rollout status deployment/${{ values.name }} -n ${K8S_NAMESPACE} --timeout=300s
+                    echo "✅ Deployment completed successfully"
+                """
+            }
+        }
+        
+        stage('Health Checks') {
+            steps {
+                script {
+                    echo "🏥 Running health checks"
+                    
+                    // Wait for pods to be ready
+                    sh """
+                        kubectl wait --for=condition=ready pod -l app=${{ values.name }} \\
+                        -n ${K8S_NAMESPACE} --timeout=300s
+                    """
+                    
+                    // Get service endpoint
+                    def serviceIP = sh(
+                        script: """
+                            kubectl get service ${{ values.name }}-service -n ${K8S_NAMESPACE} \\
+                            -o jsonpath='{.spec.clusterIP}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "🌐 Service IP: ${serviceIP}"
+                    
+                    // Health check with retry
+                    retry(5) {
+                        sh """
+                            kubectl run health-check-${env.BUILD_NUMBER} --rm -i --restart=Never \\
+                            --image=curlimages/curl --namespace=${K8S_NAMESPACE} \\
+                            -- curl -f http://${serviceIP}:80/health
+                        """
+                    }
+                    
+                    echo "✅ Health checks passed"
+                }
+            }
+        }
+        
+        stage('Smoke Tests') {
+            when {
+                not { params.SKIP_SMOKE_TESTS }
+            }
+            steps {
+                echo "💨 Running smoke tests"
+                script {
+                    // Run smoke tests against the deployed application
+                    sh """
+                        echo "Running smoke tests..."
+                        # Add your smoke test commands here
+                        # npm run test:smoke -- --endpoint=http://service-endpoint
+                        echo "✅ Smoke tests passed"
+                    """
+                }
+            }
+        }
+        
+        stage('Update Ingress/Route') {
+            when {
+                expression { return params.ENVIRONMENT == 'production' }
+            }
+            steps {
+                echo "🌐 Updating production ingress"
+                sh """
+                    cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ values.name }}-ingress
+  namespace: ${K8S_NAMESPACE}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+  - hosts:
+    - ${{ values.name }}.yourdomain.com
+    secretName: ${{ values.name }}-tls
+  rules:
+  - host: ${{ values.name }}.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ${{ values.name }}-service
+            port:
+              number: 80
+EOF
+                """
+            }
+        }
+        
+        stage('Performance Tests') {
+            when {
+                expression { return params.ENVIRONMENT == 'staging' }
+            }
+            steps {
+                echo "⚡ Running performance tests"
+                sh """
+                    echo "Running load tests..."
+                    # Add your performance testing commands here
+                    # k6 run performance-tests.js
+                    echo "✅ Performance tests completed"
+                """
+            }
+        }
+        
+        stage('Notification') {
+            steps {
+                script {
+                    def appUrl = params.ENVIRONMENT == 'production' ? 
+                        "https://${{ values.name }}.yourdomain.com" : 
+                        "https://${{ values.name }}-staging.yourdomain.com"
+                    
+                    echo "📢 Sending deployment notification"
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'good',
+                        message: ":rocket: *${{ values.name }}* deployed to *${params.ENVIRONMENT}*\\n" +
+                                "Image: ${IMAGE_NAME}:${params.IMAGE_TAG}\\n" +
+                                "Build: #${env.BUILD_NUMBER}\\n" +
+                                "URL: ${appUrl}"
+                    )
+                }
+            }
+        }
+    }
+    
+    post {
+        failure {
+            script {
+                if (params.AUTO_ROLLBACK && env.PREVIOUS_IMAGE != 'none') {
+                    echo "🔄 Auto-rollback triggered due to deployment failure"
+                    sh """
+                        kubectl set image deployment/${{ values.name }} \\
+                        app=${env.PREVIOUS_IMAGE} -n ${K8S_NAMESPACE}
+                        kubectl rollout status deployment/${{ values.name }} -n ${K8S_NAMESPACE}
+                    """
+                    
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'warning',
+                        message: ":warning: *${{ values.name }}* deployment failed and was rolled back\\n" +
+                                "Environment: ${params.ENVIRONMENT}\\n" +
+                                "Rolled back to: ${env.PREVIOUS_IMAGE}\\n" +
+                                "Build: #${env.BUILD_NUMBER}"
+                    )
+                } else {
+                    slackSend(
+                        channel: '#deployments',
+                        color: 'danger',
+                        message: ":x: *${{ values.name }}* deployment failed\\n" +
+                                "Environment: ${params.ENVIRONMENT}\\n" +
+                                "Image: ${IMAGE_NAME}:${params.IMAGE_TAG}\\n" +
+                                "Build: #${env.BUILD_NUMBER}"
+                    )
+                }
+            }
+        }
+        
+        always {
+            echo "🧹 Cleaning up temporary resources"
+            sh """
+                kubectl delete pod health-check-${env.BUILD_NUMBER} -n ${K8S_NAMESPACE} --ignore-not-found=true
+            """
+        }
+    }
+}

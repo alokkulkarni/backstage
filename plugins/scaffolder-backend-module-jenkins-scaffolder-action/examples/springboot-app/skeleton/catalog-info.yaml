@@ -1,0 +1,157 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.name }}
+  title: ${{ values.name | title }}
+  description: ${{ values.description }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+    jenkins.io/github-folder: ${{ values.name }}
+    backstage.io/techdocs-ref: dir:.
+    sonarqube.org/project-key: ${{ values.sonarProjectKey }}
+  tags:
+    - java
+    - spring-boot
+    - microservice
+    - jenkins
+    - kubernetes
+  links:
+    - url: https://github.com/${{ values.destination.owner }}/${{ values.destination.repo }}
+      title: Source Code
+      icon: github
+    - url: https://your-jenkins.com/job/${{ values.name }}
+      title: Jenkins Pipeline
+      icon: jenkins
+    - url: https://your-sonar.com/dashboard?id=${{ values.sonarProjectKey }}
+      title: SonarQube Analysis
+      icon: sonarqube
+spec:
+  type: microservice
+  lifecycle: experimental
+  owner: ${{ values.owner }}
+  system: platform
+  providesApis:
+    - ${{ values.name }}-api
+  dependsOn:
+    - resource:${{ values.name }}-database
+    - resource:${{ values.name }}-redis
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: ${{ values.name }}-api
+  title: ${{ values.name | title }} API
+  description: REST API for ${{ values.description }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  tags:
+    - rest
+    - openapi
+    - spring-boot
+spec:
+  type: openapi
+  lifecycle: experimental
+  owner: ${{ values.owner }}
+  system: platform
+  definition: |
+    openapi: 3.0.3
+    info:
+      title: ${{ values.name | title }} API
+      description: ${{ values.description }}
+      version: 1.0.0
+    servers:
+      - url: https://api.example.com
+        description: Production server
+      - url: https://staging-api.example.com
+        description: Staging server
+    paths:
+      /actuator/health:
+        get:
+          summary: Health check endpoint
+          description: Returns the health status of the application
+          responses:
+            '200':
+              description: Application is healthy
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: UP
+      /actuator/info:
+        get:
+          summary: Application information
+          description: Returns application build and version information
+          responses:
+            '200':
+              description: Application information
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      build:
+                        type: object
+                      git:
+                        type: object
+      /api/v1/${{ values.name }}:
+        get:
+          summary: Get ${{ values.name }} resources
+          description: Retrieve all ${{ values.name }} resources
+          responses:
+            '200':
+              description: List of resources
+              content:
+                application/json:
+                  schema:
+                    type: array
+                    items:
+                      type: object
+        post:
+          summary: Create ${{ values.name }} resource
+          description: Create a new ${{ values.name }} resource
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  type: object
+          responses:
+            '201':
+              description: Resource created successfully
+            '400':
+              description: Invalid request data
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: ${{ values.name }}-database
+  title: ${{ values.name | title }} Database
+  description: PostgreSQL database for ${{ values.name }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  tags:
+    - database
+    - postgresql
+spec:
+  type: database
+  owner: ${{ values.owner }}
+  system: platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: ${{ values.name }}-redis
+  title: ${{ values.name | title }} Cache
+  description: Redis cache for ${{ values.name }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  tags:
+    - cache
+    - redis
+spec:
+  type: cache
+  owner: ${{ values.owner }}
+  system: platform

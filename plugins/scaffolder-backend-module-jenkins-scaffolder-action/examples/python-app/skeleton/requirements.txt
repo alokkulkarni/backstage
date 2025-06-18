@@ -1,0 +1,55 @@
+# Production dependencies
+{% if values.framework == "fastapi" -%}
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+redis==5.0.1
+sqlalchemy==2.0.23
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+prometheus-client==0.19.0
+structlog==23.2.0
+{%- elif values.framework == "django" -%}
+Django==4.2.7
+djangorestframework==3.14.0
+django-cors-headers==4.3.1
+django-extensions==3.2.3
+django-filter==23.5
+djangorestframework-simplejwt==5.3.0
+celery==5.3.4
+redis==5.0.1
+psycopg2-binary==2.9.9
+django-health-check==3.17.0
+django-prometheus==2.3.1
+python-decouple==3.8
+structlog==23.2.0
+{%- elif values.framework == "flask" -%}
+Flask==3.0.0
+Flask-RESTful==0.3.10
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.5
+Flask-JWT-Extended==4.6.0
+Flask-CORS==4.0.0
+Flask-Redis==0.4.0
+Flask-Caching==2.1.0
+marshmallow==3.20.1
+psycopg2-binary==2.9.9
+celery==5.3.4
+redis==5.0.1
+prometheus-client==0.19.0
+structlog==23.2.0
+{%- endif %}
+
+# Common dependencies
+requests==2.31.0
+httpx==0.25.2
+python-dotenv==1.0.0
+PyYAML==6.0.1
+jsonschema==4.20.0
+
+# Development dependencies (install with pip install -r requirements-dev.txt)

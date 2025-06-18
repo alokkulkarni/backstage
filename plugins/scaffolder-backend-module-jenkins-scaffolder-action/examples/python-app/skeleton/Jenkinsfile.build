@@ -1,0 +1,778 @@
+#!/usr/bin/env groovy
+
+/**
+ * Jenkins Build Pipeline for Python Application
+ * 
+ * This pipeline provides comprehensive CI/CD for Python applications including:
+ * - Multi-version Python support (3.8-3.12)
+ * - Package management (pip, poetry, pipenv)
+ * - Framework support (FastAPI, Django, Flask)
+ * - Testing with pytest/unittest
+ * - Code quality analysis (flake8, black, isort, mypy)
+ * - Security scanning (safety, bandit, semgrep)
+ * - Container image building and scanning
+ * - Artifact publishing and deployment
+ */
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: python
+    image: python:${{ values.pythonVersion }}-slim
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+  - name: docker
+    image: docker:24-dind
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+  - name: trivy
+    image: aquasec/trivy:latest
+    command:
+    - cat
+    tty: true
+  volumes:
+  - name: docker-sock
+    hostPath:
+      path: /var/run/docker.sock
+"""
+        }
+    }
+
+    options {
+        buildDiscarder(logRotator(
+            numToKeepStr: '${{ values.buildRetention | default(30) }}',
+            daysToKeepStr: '${{ values.buildRetention | default(30) }}'
+        ))
+        timeout(time: 45, unit: 'MINUTES')
+        retry(1)
+        skipStagesAfterUnstable()
+        parallelsAlwaysFailFast()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        // Application Configuration
+        APP_NAME = '${{ values.name }}'
+        PYTHON_VERSION = '${{ values.pythonVersion }}'
+        FRAMEWORK = '${{ values.framework }}'
+        PACKAGE_MANAGER = '${{ values.packageManager | default("pip") }}'
+        
+        // Build Configuration
+        BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        BUILD_TAG = "build-${env.BUILD_NUMBER}"
+        GIT_COMMIT_SHORT = "${env.GIT_COMMIT?.take(8) ?: 'unknown'}"
+        
+        // Docker Configuration
+        {% if values.enableDocker %}
+        DOCKER_REGISTRY = '${{ values.dockerRegistry | default("docker.company.com") }}'
+        DOCKER_NAMESPACE = '${{ values.dockerNamespace | default("apps") }}'
+        DOCKER_IMAGE = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/${APP_NAME}"
+        DOCKER_TAG = "${env.BRANCH_NAME}-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}"
+        {% endif %}
+        
+        // Testing Configuration
+        TEST_FRAMEWORK = '${{ values.testFramework | default("pytest") }}'
+        TEST_COVERAGE_THRESHOLD = '${{ values.testCoverage | default(80) }}'
+        
+        // Security Configuration
+        {% if values.enableSecurityScanning %}
+        ENABLE_SECURITY_SCAN = 'true'
+        {% endif %}
+        {% if values.enableDependencyCheck %}
+        ENABLE_DEPENDENCY_SCAN = 'true'
+        {% endif %}
+        
+        // Quality Configuration
+        {% if values.sonarQubeUrl %}
+        SONARQUBE_URL = '${{ values.sonarQubeUrl }}'
+        SONARQUBE_TOKEN = credentials('${{ values.sonarQubeToken | default("sonarqube-token") }}')
+        {% endif %}
+        
+        // Paths and Directories
+        WORKSPACE_DIR = "${env.WORKSPACE}"
+        VENV_DIR = "${env.WORKSPACE}/.venv"
+        REPORTS_DIR = "${env.WORKSPACE}/reports"
+        ARTIFACTS_DIR = "${env.WORKSPACE}/artifacts"
+    }
+
+    stages {
+        stage('Preparation') {
+            steps {
+                script {
+                    // Clean workspace and create directories
+                    sh """
+                        echo "🚀 Starting Python build pipeline for ${APP_NAME}"
+                        echo "Python Version: ${PYTHON_VERSION}"
+                        echo "Framework: ${FRAMEWORK}"
+                        echo "Package Manager: ${PACKAGE_MANAGER}"
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        echo "Git Commit: ${GIT_COMMIT_SHORT}"
+                        
+                        # Clean and create directories
+                        rm -rf ${REPORTS_DIR} ${ARTIFACTS_DIR} ${VENV_DIR}
+                        mkdir -p ${REPORTS_DIR} ${ARTIFACTS_DIR}
+                    """
+                    
+                    // Store build information
+                    writeFile file: 'build-info.json', text: """
+{
+    "appName": "${APP_NAME}",
+    "pythonVersion": "${PYTHON_VERSION}",
+    "framework": "${FRAMEWORK}",
+    "packageManager": "${PACKAGE_MANAGER}",
+    "buildNumber": "${BUILD_NUMBER}",
+    "gitCommit": "${GIT_COMMIT_SHORT}",
+    "buildTimestamp": "${new Date().format('yyyy-MM-dd HH:mm:ss')}",
+    "buildUrl": "${env.BUILD_URL}"
+}
+"""
+                }
+            }
+        }
+
+        stage('Environment Setup') {
+            parallel {
+                stage('Python Environment') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🐍 Setting up Python environment"
+                                    python --version
+                                    pip --version
+                                    
+                                    # Upgrade pip
+                                    python -m pip install --upgrade pip
+                                    
+                                    # Install system dependencies
+                                    apt-get update && apt-get install -y \\
+                                        build-essential \\
+                                        curl \\
+                                        git \\
+                                        libpq-dev \\
+                                        default-libmysqlclient-dev \\
+                                        pkg-config
+                                """
+                                
+                                // Setup package manager specific environment
+                                if (env.PACKAGE_MANAGER == 'poetry') {
+                                    sh """
+                                        pip install poetry
+                                        poetry config virtualenvs.create true
+                                        poetry config virtualenvs.in-project true
+                                    """
+                                } else if (env.PACKAGE_MANAGER == 'pipenv') {
+                                    sh """
+                                        pip install pipenv
+                                        export PIPENV_VENV_IN_PROJECT=1
+                                    """
+                                } else {
+                                    sh """
+                                        python -m venv ${VENV_DIR}
+                                        . ${VENV_DIR}/bin/activate
+                                        pip install --upgrade pip setuptools wheel
+                                    """
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stage('Code Checkout & Validation') {
+                    steps {
+                        script {
+                            // Validate repository structure
+                            sh """
+                                echo "📋 Validating project structure"
+                                
+                                # Check for required files
+                                if [ ! -f "pyproject.toml" ] && [ ! -f "setup.py" ] && [ ! -f "requirements.txt" ] && [ ! -f "Pipfile" ]; then
+                                    echo "❌ No Python project configuration found (pyproject.toml, setup.py, requirements.txt, or Pipfile)"
+                                    exit 1
+                                fi
+                                
+                                # List project structure
+                                echo "📁 Project structure:"
+                                find . -type f -name "*.py" | head -20
+                                
+                                # Check for common Python files
+                                [ -f "main.py" ] && echo "✅ main.py found"
+                                [ -f "app.py" ] && echo "✅ app.py found"
+                                [ -f "manage.py" ] && echo "✅ manage.py found (Django)"
+                                [ -d "tests" ] && echo "✅ tests directory found"
+                                [ -d "test" ] && echo "✅ test directory found"
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Dependency Installation') {
+            steps {
+                container('python') {
+                    script {
+                        if (env.PACKAGE_MANAGER == 'poetry') {
+                            sh """
+                                echo "📦 Installing dependencies with Poetry"
+                                poetry install --no-dev
+                                poetry install --only=dev
+                                poetry show --tree
+                            """
+                        } else if (env.PACKAGE_MANAGER == 'pipenv') {
+                            sh """
+                                echo "📦 Installing dependencies with Pipenv"
+                                pipenv install --dev
+                                pipenv graph
+                            """
+                        } else {
+                            sh """
+                                echo "📦 Installing dependencies with pip"
+                                . ${VENV_DIR}/bin/activate
+                                
+                                # Install production dependencies
+                                if [ -f "requirements.txt" ]; then
+                                    pip install -r requirements.txt
+                                fi
+                                
+                                # Install development dependencies
+                                if [ -f "requirements-dev.txt" ]; then
+                                    pip install -r requirements-dev.txt
+                                fi
+                                
+                                # Install test dependencies
+                                if [ -f "requirements-test.txt" ]; then
+                                    pip install -r requirements-test.txt
+                                fi
+                                
+                                # Install common development tools
+                                pip install \\
+                                    pytest \\
+                                    pytest-cov \\
+                                    pytest-xdist \\
+                                    flake8 \\
+                                    black \\
+                                    isort \\
+                                    mypy \\
+                                    bandit \\
+                                    safety
+                                
+                                pip list
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Code Quality Analysis') {
+            parallel {
+                {% if values.includeLinting %}
+                stage('Linting & Formatting') {
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "🔍 Running code quality checks"
+                                    ${activateCmd}
+                                    
+                                    # Black - Code formatting check
+                                    echo "Running Black formatter check..."
+                                    black --check --diff . > ${REPORTS_DIR}/black-report.txt || true
+                                    
+                                    # isort - Import sorting check
+                                    echo "Running isort import check..."
+                                    isort --check-only --diff . > ${REPORTS_DIR}/isort-report.txt || true
+                                    
+                                    # flake8 - Style guide enforcement
+                                    echo "Running flake8 style check..."
+                                    flake8 --format=pylint --output-file=${REPORTS_DIR}/flake8-report.txt . || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'flake8-report.txt,black-report.txt,isort-report.txt',
+                                reportName: 'Code Quality Report',
+                                reportTitles: 'Code Quality Analysis'
+                            ])
+                        }
+                    }
+                }
+                {% endif %}
+
+                {% if values.includeTyping %}
+                stage('Type Checking') {
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "🔎 Running static type analysis"
+                                    ${activateCmd}
+                                    
+                                    # MyPy - Static type checking
+                                    echo "Running MyPy type checking..."
+                                    mypy --html-report ${REPORTS_DIR}/mypy --cobertura-xml-report ${REPORTS_DIR} . || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports/mypy',
+                                reportFiles: 'index.html',
+                                reportName: 'MyPy Type Check Report',
+                                reportTitles: 'Static Type Analysis'
+                            ])
+                        }
+                    }
+                }
+                {% endif %}
+
+                {% if values.enableSecurityScanning %}
+                stage('Security Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "🔒 Running security analysis"
+                                    ${activateCmd}
+                                    
+                                    # Bandit - Security linting
+                                    echo "Running Bandit security analysis..."
+                                    bandit -r . -f json -o ${REPORTS_DIR}/bandit-report.json || true
+                                    bandit -r . -f html -o ${REPORTS_DIR}/bandit-report.html || true
+                                    
+                                    # Safety - Dependency vulnerability check
+                                    echo "Running Safety dependency check..."
+                                    safety check --json --output ${REPORTS_DIR}/safety-report.json || true
+                                    safety check --output ${REPORTS_DIR}/safety-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'bandit-report.html',
+                                reportName: 'Security Analysis Report',
+                                reportTitles: 'Security Vulnerability Analysis'
+                            ])
+                        }
+                    }
+                }
+                {% endif %}
+            }
+        }
+
+        stage('Testing') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "🧪 Running unit tests"
+                                    ${activateCmd}
+                                    
+                                    # Run tests based on framework
+                                    if [ "${TEST_FRAMEWORK}" = "pytest" ]; then
+                                        echo "Running pytest..."
+                                        pytest \\
+                                            --cov=. \\
+                                            --cov-report=html:${REPORTS_DIR}/coverage-html \\
+                                            --cov-report=xml:${REPORTS_DIR}/coverage.xml \\
+                                            --cov-report=term \\
+                                            --cov-fail-under=${TEST_COVERAGE_THRESHOLD} \\
+                                            --junitxml=${REPORTS_DIR}/pytest-report.xml \\
+                                            --html=${REPORTS_DIR}/pytest-report.html \\
+                                            --self-contained-html \\
+                                            -v
+                                    else
+                                        echo "Running unittest..."
+                                        python -m unittest discover -s tests -p "test_*.py" -v
+                                    fi
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            // Publish test results
+                            publishTestResults testResultsPattern: 'reports/pytest-report.xml'
+                            
+                            // Publish coverage reports
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports/coverage-html',
+                                reportFiles: 'index.html',
+                                reportName: 'Coverage Report',
+                                reportTitles: 'Test Coverage Analysis'
+                            ])
+                            
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'pytest-report.html',
+                                reportName: 'Test Report',
+                                reportTitles: 'Unit Test Results'
+                            ])
+                        }
+                    }
+                }
+
+                stage('Integration Tests') {
+                    when {
+                        anyOf {
+                            expression { fileExists('tests/integration') }
+                            expression { fileExists('test/integration') }
+                        }
+                    }
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "🔗 Running integration tests"
+                                    ${activateCmd}
+                                    
+                                    # Run integration tests
+                                    pytest tests/integration/ \\
+                                        --junitxml=${REPORTS_DIR}/integration-test-report.xml \\
+                                        --html=${REPORTS_DIR}/integration-test-report.html \\
+                                        --self-contained-html \\
+                                        -v || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishTestResults testResultsPattern: 'reports/integration-test-report.xml'
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'integration-test-report.html',
+                                reportName: 'Integration Test Report',
+                                reportTitles: 'Integration Test Results'
+                            ])
+                        }
+                    }
+                }
+            }
+        }
+
+        {% if values.sonarQubeUrl %}
+        stage('SonarQube Analysis') {
+            steps {
+                container('python') {
+                    script {
+                        sh """
+                            echo "📊 Running SonarQube analysis"
+                            
+                            # Install SonarQube scanner
+                            curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+                            unzip -q sonar-scanner.zip
+                            export PATH=\$PATH:\$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
+                            
+                            # Run SonarQube analysis
+                            sonar-scanner \\
+                                -Dsonar.projectKey=${APP_NAME} \\
+                                -Dsonar.projectName="${APP_NAME}" \\
+                                -Dsonar.projectVersion=${BUILD_NUMBER} \\
+                                -Dsonar.sources=. \\
+                                -Dsonar.exclusions="**/venv/**,**/.venv/**,**/tests/**,**/test/**" \\
+                                -Dsonar.python.coverage.reportPaths=${REPORTS_DIR}/coverage.xml \\
+                                -Dsonar.python.xunit.reportPath=${REPORTS_DIR}/pytest-report.xml \\
+                                -Dsonar.host.url=${SONARQUBE_URL} \\
+                                -Dsonar.login=${SONARQUBE_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+        {% endif %}
+
+        stage('Build Artifacts') {
+            parallel {
+                stage('Package Application') {
+                    steps {
+                        container('python') {
+                            script {
+                                def activateCmd = getActivationCommand()
+                                sh """
+                                    echo "📦 Building application package"
+                                    ${activateCmd}
+                                    
+                                    # Build wheel and source distribution
+                                    if [ -f "pyproject.toml" ]; then
+                                        pip install build
+                                        python -m build --outdir ${ARTIFACTS_DIR}
+                                    elif [ -f "setup.py" ]; then
+                                        python setup.py sdist bdist_wheel --dist-dir ${ARTIFACTS_DIR}
+                                    fi
+                                    
+                                    # Create requirements freeze
+                                    pip freeze > ${ARTIFACTS_DIR}/requirements-freeze.txt
+                                    
+                                    # Package source code
+                                    tar -czf ${ARTIFACTS_DIR}/${APP_NAME}-${BUILD_NUMBER}-source.tar.gz \\
+                                        --exclude='.git' \\
+                                        --exclude='.venv' \\
+                                        --exclude='__pycache__' \\
+                                        --exclude='*.pyc' \\
+                                        --exclude='reports' \\
+                                        --exclude='artifacts' \\
+                                        .
+                                """
+                            }
+                        }
+                    }
+                }
+
+                {% if values.enableDocker %}
+                stage('Build Docker Image') {
+                    steps {
+                        container('docker') {
+                            script {
+                                sh """
+                                    echo "🐳 Building Docker image"
+                                    
+                                    # Build Docker image
+                                    docker build \\
+                                        --build-arg PYTHON_VERSION=${PYTHON_VERSION} \\
+                                        --build-arg APP_NAME=${APP_NAME} \\
+                                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \\
+                                        --build-arg GIT_COMMIT=${GIT_COMMIT_SHORT} \\
+                                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} \\
+                                        -t ${DOCKER_IMAGE}:latest \\
+                                        .
+                                    
+                                    # Save image as tar for artifacts
+                                    docker save ${DOCKER_IMAGE}:${DOCKER_TAG} | gzip > ${ARTIFACTS_DIR}/${APP_NAME}-${DOCKER_TAG}.tar.gz
+                                    
+                                    echo "Docker image built: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Container Security Scan') {
+                    when {
+                        expression { return params.enableDocker && params.enableSecurityScanning }
+                    }
+                    steps {
+                        container('trivy') {
+                            script {
+                                sh """
+                                    echo "🔍 Scanning Docker image for vulnerabilities"
+                                    
+                                    # Scan Docker image with Trivy
+                                    trivy image \\
+                                        --format json \\
+                                        --output ${REPORTS_DIR}/trivy-report.json \\
+                                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                                    
+                                    trivy image \\
+                                        --format table \\
+                                        --output ${REPORTS_DIR}/trivy-report.txt \\
+                                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                                    
+                                    # Generate HTML report
+                                    trivy image \\
+                                        --format template \\
+                                        --template '@contrib/html.tpl' \\
+                                        --output ${REPORTS_DIR}/trivy-report.html \\
+                                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'reports',
+                                reportFiles: 'trivy-report.html',
+                                reportName: 'Container Security Report',
+                                reportTitles: 'Docker Image Vulnerability Analysis'
+                            ])
+                        }
+                    }
+                }
+                {% endif %}
+            }
+        }
+
+        stage('Publish Artifacts') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'develop'
+                }
+            }
+            parallel {
+                stage('Publish Python Package') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "📚 Publishing Python package"
+                                    
+                                    # Archive artifacts in Jenkins
+                                    echo "Archiving Python artifacts..."
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
+                        }
+                    }
+                }
+
+                {% if values.enableDocker %}
+                stage('Push Docker Image') {
+                    steps {
+                        container('docker') {
+                            script {
+                                withCredentials([usernamePassword(
+                                    credentialsId: 'docker-registry-credentials',
+                                    passwordVariable: 'DOCKER_PASSWORD',
+                                    usernameVariable: 'DOCKER_USERNAME'
+                                )]) {
+                                    sh """
+                                        echo "🚀 Pushing Docker image to registry"
+                                        
+                                        # Login to Docker registry
+                                        echo \$DOCKER_PASSWORD | docker login ${DOCKER_REGISTRY} -u \$DOCKER_USERNAME --password-stdin
+                                        
+                                        # Push images
+                                        docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+                                        docker push ${DOCKER_IMAGE}:latest
+                                        
+                                        echo "Docker image pushed: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                                    """
+                                }
+                            }
+                        }
+                    }
+                }
+                {% endif %}
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Generate build summary
+                sh """
+                    echo "📋 Build Summary for ${APP_NAME}" > build-summary.txt
+                    echo "=================================" >> build-summary.txt
+                    echo "Build Number: ${BUILD_NUMBER}" >> build-summary.txt
+                    echo "Git Commit: ${GIT_COMMIT_SHORT}" >> build-summary.txt
+                    echo "Python Version: ${PYTHON_VERSION}" >> build-summary.txt
+                    echo "Framework: ${FRAMEWORK}" >> build-summary.txt
+                    echo "Build Status: \${currentBuild.currentResult}" >> build-summary.txt
+                    echo "Build Duration: \${currentBuild.duration}ms" >> build-summary.txt
+                    echo "Build URL: ${env.BUILD_URL}" >> build-summary.txt
+                """
+                
+                // Archive reports and artifacts
+                archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'build-info.json,build-summary.txt', allowEmptyArchive: true
+            }
+        }
+        
+        success {
+            script {
+                echo "✅ Build completed successfully!"
+                // Send success notifications
+                {% if values.enableWebhooks %}
+                // Add webhook notifications here
+                {% endif %}
+            }
+        }
+        
+        failure {
+            script {
+                echo "❌ Build failed!"
+                // Send failure notifications
+                {% if values.enableWebhooks %}
+                // Add webhook notifications here
+                {% endif %}
+            }
+        }
+        
+        unstable {
+            script {
+                echo "⚠️ Build completed with warnings!"
+            }
+        }
+        
+        cleanup {
+            container('python') {
+                sh """
+                    echo "🧹 Cleaning up build environment"
+                    # Clean up virtual environment and temporary files
+                    rm -rf ${VENV_DIR} .pytest_cache __pycache__ *.egg-info
+                """
+            }
+        }
+    }
+}
+
+/**
+ * Get the appropriate activation command based on package manager
+ */
+def getActivationCommand() {
+    if (env.PACKAGE_MANAGER == 'poetry') {
+        return 'poetry shell'
+    } else if (env.PACKAGE_MANAGER == 'pipenv') {
+        return 'pipenv shell'
+    } else {
+        return ". ${env.VENV_DIR}/bin/activate"
+    }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "entity owner unregister",
+  "description": "policy to allow only entity owners to only unregister entity from catalog",
+  "resource": "catalog-entity",
+  "actions": [
+    "delete"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "*"
+    },
+    {
+      "type": "group",
+      "identifier": "*"
+    }
+  ],
+  "conditions": [],
+  "metadata": {
+    "priority": 1,
+    "tags": [],
+    "category": "access-control",
+    "createdAt": "2025-06-07T15:00:57.557Z",
+    "updatedAt": "2025-06-07T15:00:57.557Z"
+  },
+  "id": "e99695ef-b11f-4821-a648-3d8bd4ade91a"
+}

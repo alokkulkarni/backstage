@@ -1,0 +1,306 @@
+# Default values for {{ values.component_id }}.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 2
+
+image:
+  repository: "{{ values.docker_registry }}/{{ values.organization }}/{{ values.component_id }}"
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/rate-limit: "200"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+  hosts:
+    - host: "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: "{{ values.component_id }}-tls"
+      hosts:
+        - "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - {{ values.component_id }}
+        topologyKey: kubernetes.io/hostname
+
+# Environment variables
+env:
+  - name: SPRING_PROFILES_ACTIVE
+    value: "production"
+  - name: SERVER_PORT
+    value: "8080"
+  - name: JAVA_OPTS
+    value: "-Xms512m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication"
+  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+    value: "validate"
+  - name: SPRING_JPA_SHOW_SQL
+    value: "false"
+  - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY
+    value: "INFO"
+  - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+    value: "health,info,metrics,prometheus"
+  - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+    value: "when-authorized"
+
+# Database configuration
+database:
+  host: "{{ values.component_id }}-postgres"
+  port: "5432"
+  name: "{{ values.component_id }}"
+  username: "{{ values.component_id }}"
+  secretName: "{{ values.component_id }}-db-secret"
+
+# Redis configuration (if caching is enabled)
+redis:
+  enabled: true
+  host: "{{ values.component_id }}-redis"
+  port: "6379"
+  secretName: "{{ values.component_id }}-redis-secret"
+
+# ConfigMap configuration
+configMap:
+  data:
+    application.yml: |
+      spring:
+        application:
+          name: {{ values.component_id }}
+        datasource:
+          url: jdbc:postgresql://${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}
+          username: ${DATABASE_USERNAME}
+          password: ${DATABASE_PASSWORD}
+          driver-class-name: org.postgresql.Driver
+          hikari:
+            maximum-pool-size: 20
+            minimum-idle: 5
+            idle-timeout: 300000
+            connection-timeout: 20000
+            leak-detection-threshold: 60000
+        jpa:
+          hibernate:
+            ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:validate}
+          show-sql: ${SPRING_JPA_SHOW_SQL:false}
+          properties:
+            hibernate:
+              dialect: org.hibernate.dialect.PostgreSQLDialect
+              format_sql: true
+              jdbc:
+                lob:
+                  non_contextual_creation: true
+        cache:
+          type: redis
+        redis:
+          host: ${REDIS_HOST}
+          port: ${REDIS_PORT}
+          password: ${REDIS_PASSWORD}
+          timeout: 2000
+          lettuce:
+            pool:
+              max-active: 20
+              max-idle: 10
+              min-idle: 5
+      server:
+        port: ${SERVER_PORT:8080}
+        compression:
+          enabled: true
+          mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+          min-response-size: 1024
+        error:
+          whitelabel:
+            enabled: false
+      management:
+        endpoints:
+          web:
+            exposure:
+              include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,metrics}
+        endpoint:
+          health:
+            show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:when-authorized}
+        metrics:
+          export:
+            prometheus:
+              enabled: true
+      logging:
+        level:
+          org.springframework.security: ${LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY:INFO}
+        pattern:
+          console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+          file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Probes configuration
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /actuator/health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+      ports:
+      - protocol: TCP
+        port: 8080
+    - from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-postgres
+      ports:
+      - protocol: TCP
+        port: 5432
+    - from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-redis
+      ports:
+      - protocol: TCP
+        port: 6379
+  egress:
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-postgres
+      ports:
+      - protocol: TCP
+        port: 5432
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-redis
+      ports:
+      - protocol: TCP
+        port: 6379
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 80
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Service Monitor for Prometheus
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  interval: 30s
+  path: /actuator/prometheus
+  labels:
+    release: prometheus
+
+# Secrets
+secrets:
+  database:
+    username: "{{ values.component_id }}"
+    password: "changeme"
+  redis:
+    password: "changeme"

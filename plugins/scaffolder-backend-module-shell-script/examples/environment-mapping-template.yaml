@@ -1,0 +1,561 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: shell-environment-mapping-example
+  title: Shell Script Environment Mapping Example
+  description: Demonstrates how environment variables are automatically mapped from app-config.yaml
+  tags:
+    - shell
+    - environment
+    - configuration
+    - example
+spec:
+  owner: platform-team
+  type: service
+  
+  parameters:
+    - title: Project Information
+      required:
+        - name
+        - description
+      properties:
+        name:
+          title: Project Name
+          type: string
+          description: Name of the project
+          pattern: '^[a-zA-Z]([a-zA-Z0-9._-])*$'
+        description:
+          title: Description
+          type: string
+          description: Description of the project
+        
+    - title: Integration Setup
+      properties:
+        useGitHub:
+          title: Setup GitHub Integration
+          type: boolean
+          default: true
+          description: Configure GitHub repository with automatic token mapping
+        useJenkins:
+          title: Setup Jenkins Pipeline
+          type: boolean
+          default: false
+          description: Create Jenkins pipeline with automatic credentials mapping
+        useJira:
+          title: Setup Jira Integration
+          type: boolean
+          default: false
+          description: Configure Jira integration with automatic API token mapping
+        useSonarQube:
+          title: Setup SonarQube
+          type: boolean
+          default: false
+          description: Configure SonarQube analysis with automatic API key mapping
+
+  steps:
+    - id: fetch
+      name: Fetch Base Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+
+    - id: show-environment-variables
+      name: Display Available Environment Variables
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🌍 Environment Variables Available from app-config.yaml:"
+          echo "=================================================="
+          
+          # Show automatically mapped variables from integrations
+          echo "📊 Automatically Mapped from Configuration:"
+          echo "  GITHUB_TOKEN: ${GITHUB_TOKEN:+(set)}"
+          echo "  JENKINS_BASE_URL: ${JENKINS_BASE_URL:-(not set)}"
+          echo "  JENKINS_USERNAME: ${JENKINS_USERNAME:-(not set)}"
+          echo "  JENKINS_API_KEY: ${JENKINS_API_KEY:+(set)}"
+          echo "  JIRA_BASE_URL: ${JIRA_BASE_URL:-(not set)}"
+          echo "  JIRA_API_TOKEN: ${JIRA_API_TOKEN:+(set)}"
+          echo "  JIRA_USERNAME: ${JIRA_USERNAME:-(not set)}"
+          echo "  SONARQUBE_BASE_URL: ${SONARQUBE_BASE_URL:-(not set)}"
+          echo "  SONARQUBE_API_KEY: ${SONARQUBE_API_KEY:+(set)}"
+          echo "  BACKSTAGE_BASE_URL: ${BACKSTAGE_BASE_URL:-(not set)}"
+          echo "  BACKSTAGE_BACKEND_URL: ${BACKSTAGE_BACKEND_URL:-(not set)}"
+          echo "  TERRAFORM_DEFAULT_OWNER: ${TERRAFORM_DEFAULT_OWNER:-(not set)}"
+          echo "  TERRAFORM_DEFAULT_REPO: ${TERRAFORM_DEFAULT_REPO:-(not set)}"
+          
+          echo ""
+          echo "🔧 From Global Scaffolder Configuration:"
+          echo "  NODE_ENV: ${NODE_ENV:-(not set)}"
+          echo "  DOCKER_REGISTRY: ${DOCKER_REGISTRY:-(not set)}"
+          echo "  HELM_REPO_URL: ${HELM_REPO_URL:-(not set)}"
+          echo "  PLATFORM_NAME: ${PLATFORM_NAME:-(not set)}"
+          echo "  PLATFORM_OWNER: ${PLATFORM_OWNER:-(not set)}"
+          echo "  PLATFORM_ENVIRONMENT: ${PLATFORM_ENVIRONMENT:-(not set)}"
+          
+          echo ""
+          echo "⚙️  From Shell Action Configuration:"
+          echo "  SHELL_TIMEOUT_DEFAULT: ${SHELL_TIMEOUT_DEFAULT:-(not set)}"
+          echo "  SHELL_LOG_OUTPUT: ${SHELL_LOG_OUTPUT:-(not set)}"
+          echo "  MAVEN_OPTS: ${MAVEN_OPTS:-(not set)}"
+          echo "  GRADLE_OPTS: ${GRADLE_OPTS:-(not set)}"
+          echo "  NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-(not set)}"
+          echo "  DOCKER_BUILDKIT: ${DOCKER_BUILDKIT:-(not set)}"
+          echo "  KUBECTL_TIMEOUT: ${KUBECTL_TIMEOUT:-(not set)}"
+          echo "  HELM_TIMEOUT: ${HELM_TIMEOUT:-(not set)}"
+          
+          echo ""
+          echo "📦 Template Specific Variables:"
+          echo "  PROJECT_NAME: ${{ parameters.name }}"
+          echo "  PROJECT_DESCRIPTION: ${{ parameters.description }}"
+        environment:
+          PROJECT_NAME: ${{ parameters.name }}
+          PROJECT_DESCRIPTION: ${{ parameters.description }}
+
+    - id: setup-project-structure
+      name: Setup Project Structure
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🏗️  Setting up project structure for: $PROJECT_NAME"
+          
+          # Create directory structure
+          mkdir -p src tests docs scripts .github/workflows
+          
+          # Create package.json with environment-specific registry
+          cat > package.json << EOF
+          {
+            "name": "$PROJECT_NAME",
+            "version": "1.0.0",
+            "description": "$PROJECT_DESCRIPTION",
+            "main": "src/index.js",
+            "scripts": {
+              "start": "node src/index.js",
+              "test": "npm test",
+              "build": "npm run build"
+            },
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/$TERRAFORM_DEFAULT_OWNER/$PROJECT_NAME.git"
+            },
+            "publishConfig": {
+              "registry": "$NPM_CONFIG_REGISTRY"
+            }
+          }
+          EOF
+          
+          # Create basic source file
+          cat > src/index.js << EOF
+          // $PROJECT_NAME - $PROJECT_DESCRIPTION
+          // Platform: $PLATFORM_NAME
+          // Environment: $PLATFORM_ENVIRONMENT
+          
+          console.log('🚀 Starting $PROJECT_NAME');
+          console.log('Platform: $PLATFORM_NAME');
+          console.log('Environment: $PLATFORM_ENVIRONMENT');
+          console.log('Registry: $NPM_CONFIG_REGISTRY');
+          EOF
+          
+          echo "✅ Project structure created successfully!"
+
+    - id: setup-github-integration
+      name: Setup GitHub Integration
+      if: ${{ parameters.useGitHub }}
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "📂 Setting up GitHub integration..."
+          
+          # Verify GitHub token is available
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "❌ GITHUB_TOKEN not available from configuration"
+            exit 1
+          fi
+          
+          # Create GitHub workflow
+          mkdir -p .github/workflows
+          cat > .github/workflows/ci.yml << EOF
+          name: CI
+          
+          on:
+            push:
+              branches: [ main, develop ]
+            pull_request:
+              branches: [ main ]
+          
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              
+              steps:
+              - uses: actions/checkout@v3
+              
+              - name: Setup Node.js
+                uses: actions/setup-node@v3
+                with:
+                  node-version: '18'
+                  registry-url: '$NPM_CONFIG_REGISTRY'
+              
+              - name: Install dependencies
+                run: npm ci
+              
+              - name: Run tests
+                run: npm test
+              
+              - name: Build application
+                run: npm run build
+          EOF
+          
+          # Create README with GitHub integration info
+          cat > README.md << EOF
+          # $PROJECT_NAME
+          
+          $PROJECT_DESCRIPTION
+          
+          ## Platform Information
+          - **Platform**: $PLATFORM_NAME
+          - **Environment**: $PLATFORM_ENVIRONMENT
+          - **Owner**: $PLATFORM_OWNER
+          - **Registry**: $NPM_CONFIG_REGISTRY
+          
+          ## GitHub Integration
+          - Repository URL: https://github.com/$TERRAFORM_DEFAULT_OWNER/$PROJECT_NAME
+          - CI/CD: GitHub Actions configured
+          - Token: ✅ Configured automatically from Backstage
+          
+          ## Getting Started
+          
+          \`\`\`bash
+          npm install
+          npm start
+          \`\`\`
+          EOF
+          
+          echo "✅ GitHub integration configured!"
+
+    - id: setup-jenkins-pipeline
+      name: Setup Jenkins Pipeline
+      if: ${{ parameters.useJenkins }}
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🔧 Setting up Jenkins pipeline..."
+          
+          # Verify Jenkins configuration is available
+          if [ -z "$JENKINS_BASE_URL" ] || [ -z "$JENKINS_USERNAME" ] || [ -z "$JENKINS_API_KEY" ]; then
+            echo "❌ Jenkins configuration not complete"
+            echo "   JENKINS_BASE_URL: ${JENKINS_BASE_URL:-(not set)}"
+            echo "   JENKINS_USERNAME: ${JENKINS_USERNAME:-(not set)}"
+            echo "   JENKINS_API_KEY: ${JENKINS_API_KEY:+(set)}"
+            exit 1
+          fi
+          
+          # Create Jenkinsfile
+          cat > Jenkinsfile << EOF
+          pipeline {
+              agent any
+              
+              environment {
+                  NODE_ENV = '$NODE_ENV'
+                  DOCKER_REGISTRY = '$DOCKER_REGISTRY'
+                  PROJECT_NAME = '$PROJECT_NAME'
+              }
+              
+              stages {
+                  stage('Checkout') {
+                      steps {
+                          checkout scm
+                      }
+                  }
+                  
+                  stage('Install Dependencies') {
+                      steps {
+                          sh 'npm ci'
+                      }
+                  }
+                  
+                  stage('Test') {
+                      steps {
+                          sh 'npm test'
+                      }
+                  }
+                  
+                  stage('Build') {
+                      steps {
+                          sh 'npm run build'
+                      }
+                  }
+                  
+                  stage('Docker Build') {
+                      when {
+                          branch 'main'
+                      }
+                      steps {
+                          sh 'docker build -t \$DOCKER_REGISTRY/\$PROJECT_NAME:\$BUILD_NUMBER .'
+                      }
+                  }
+              }
+              
+              post {
+                  always {
+                      cleanWs()
+                  }
+              }
+          }
+          EOF
+          
+          echo "✅ Jenkins pipeline created!"
+          echo "   Jenkins URL: $JENKINS_BASE_URL"
+          echo "   Username: $JENKINS_USERNAME"
+          echo "   Pipeline file: Jenkinsfile"
+
+    - id: setup-jira-integration
+      name: Setup Jira Integration
+      if: ${{ parameters.useJira }}
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🎫 Setting up Jira integration..."
+          
+          # Verify Jira configuration is available
+          if [ -z "$JIRA_BASE_URL" ] || [ -z "$JIRA_API_TOKEN" ] || [ -z "$JIRA_USERNAME" ]; then
+            echo "❌ Jira configuration not complete"
+            echo "   JIRA_BASE_URL: ${JIRA_BASE_URL:-(not set)}"
+            echo "   JIRA_USERNAME: ${JIRA_USERNAME:-(not set)}"
+            echo "   JIRA_API_TOKEN: ${JIRA_API_TOKEN:+(set)}"
+            exit 1
+          fi
+          
+          # Create Jira integration documentation
+          cat > JIRA_INTEGRATION.md << EOF
+          # Jira Integration for $PROJECT_NAME
+          
+          ## Configuration
+          - **Jira Instance**: $JIRA_BASE_URL
+          - **Username**: $JIRA_USERNAME
+          - **API Token**: ✅ Configured automatically from Backstage
+          
+          ## Usage
+          
+          ### Issue Tracking
+          - Link commits to Jira issues using issue keys in commit messages
+          - Example: \`git commit -m "ABC-123: Add new feature"\`
+          
+          ### Project Links
+          - [Create Issue]($JIRA_BASE_URL/secure/CreateIssue.jspa)
+          - [View Board]($JIRA_BASE_URL/secure/RapidBoard.jspa)
+          
+          ## Automation
+          - Issues are automatically updated when code is deployed
+          - Commits are linked to Jira issues
+          - Release notes are generated from Jira issues
+          EOF
+          
+          echo "✅ Jira integration documented!"
+          echo "   Jira URL: $JIRA_BASE_URL"
+          echo "   Username: $JIRA_USERNAME"
+
+    - id: setup-sonarqube-analysis
+      name: Setup SonarQube Analysis
+      if: ${{ parameters.useSonarQube }}
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🔍 Setting up SonarQube analysis..."
+          
+          # Verify SonarQube configuration is available
+          if [ -z "$SONARQUBE_BASE_URL" ] || [ -z "$SONARQUBE_API_KEY" ]; then
+            echo "❌ SonarQube configuration not complete"
+            echo "   SONARQUBE_BASE_URL: ${SONARQUBE_BASE_URL:-(not set)}"
+            echo "   SONARQUBE_API_KEY: ${SONARQUBE_API_KEY:+(set)}"
+            exit 1
+          fi
+          
+          # Create SonarQube configuration
+          cat > sonar-project.properties << EOF
+          # SonarQube Configuration for $PROJECT_NAME
+          sonar.projectKey=$PROJECT_NAME
+          sonar.projectName=$PROJECT_NAME
+          sonar.projectVersion=1.0.0
+          sonar.host.url=$SONARQUBE_BASE_URL
+          
+          # Source configuration
+          sonar.sources=src
+          sonar.tests=tests
+          sonar.exclusions=node_modules/**,dist/**,coverage/**
+          
+          # Language configuration
+          sonar.javascript.lcov.reportPaths=coverage/lcov.info
+          EOF
+          
+          # Add SonarQube script to package.json
+          npm pkg set scripts.sonar="sonar-scanner"
+          npm pkg set scripts.sonar:local="sonar-scanner -Dsonar.host.url=$SONARQUBE_BASE_URL"
+          
+          echo "✅ SonarQube analysis configured!"
+          echo "   SonarQube URL: $SONARQUBE_BASE_URL"
+          echo "   Project Key: $PROJECT_NAME"
+          echo "   Run analysis: npm run sonar"
+
+    - id: create-deployment-scripts
+      name: Create Deployment Scripts
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo "🚀 Creating deployment scripts with environment variables..."
+          
+          # Create deployment script
+          cat > scripts/deploy.sh << EOF
+          #!/bin/bash
+          set -e
+          
+          echo "🚀 Deploying $PROJECT_NAME to $PLATFORM_ENVIRONMENT"
+          echo "Platform: $PLATFORM_NAME"
+          echo "Owner: $PLATFORM_OWNER"
+          
+          # Build with environment-specific registry
+          echo "📦 Building application..."
+          npm ci --registry=$NPM_CONFIG_REGISTRY
+          npm run build
+          
+          # Docker build with environment variables
+          if [ "$DOCKER_BUILDKIT" = "1" ]; then
+            echo "🐳 Building Docker image with BuildKit..."
+            DOCKER_BUILDKIT=1 docker build \\
+              --progress=$BUILDKIT_PROGRESS \\
+              --build-arg NODE_ENV=$NODE_ENV \\
+              --build-arg REGISTRY=$NPM_CONFIG_REGISTRY \\
+              -t $DOCKER_REGISTRY/$PROJECT_NAME:latest .
+          else
+            echo "🐳 Building Docker image..."
+            docker build -t $DOCKER_REGISTRY/$PROJECT_NAME:latest .
+          fi
+          
+          # Deploy with Helm if configured
+          if [ -n "$HELM_REPO_URL" ]; then
+            echo "📊 Deploying with Helm..."
+            helm repo add platform $HELM_REPO_URL
+            helm repo update
+            
+            helm upgrade --install $PROJECT_NAME platform/app \\
+              --timeout=$HELM_TIMEOUT \\
+              --set image.repository=$DOCKER_REGISTRY/$PROJECT_NAME \\
+              --set image.tag=latest \\
+              --set environment=$PLATFORM_ENVIRONMENT \\
+              --set platform.name="$PLATFORM_NAME" \\
+              --set platform.owner=$PLATFORM_OWNER
+          fi
+          
+          echo "✅ Deployment completed!"
+          EOF
+          
+          chmod +x scripts/deploy.sh
+          
+          # Create environment-specific configuration
+          cat > .env.example << EOF
+          # Environment Configuration for $PROJECT_NAME
+          NODE_ENV=$NODE_ENV
+          PLATFORM_NAME=$PLATFORM_NAME
+          PLATFORM_OWNER=$PLATFORM_OWNER
+          PLATFORM_ENVIRONMENT=$PLATFORM_ENVIRONMENT
+          
+          # Registry Configuration
+          DOCKER_REGISTRY=$DOCKER_REGISTRY
+          NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY
+          HELM_REPO_URL=$HELM_REPO_URL
+          
+          # Integration URLs (auto-configured from Backstage)
+          GITHUB_BASE_URL=https://github.com
+          JENKINS_BASE_URL=$JENKINS_BASE_URL
+          JIRA_BASE_URL=$JIRA_BASE_URL
+          SONARQUBE_BASE_URL=$SONARQUBE_BASE_URL
+          BACKSTAGE_BASE_URL=$BACKSTAGE_BASE_URL
+          BACKSTAGE_BACKEND_URL=$BACKSTAGE_BACKEND_URL
+          EOF
+          
+          echo "✅ Deployment scripts created!"
+          echo "   Deploy script: scripts/deploy.sh"
+          echo "   Environment template: .env.example"
+
+    - id: summary
+      name: Show Setup Summary
+      action: shell:execute
+      input:
+        script: |
+          #!/bin/bash
+          echo ""
+          echo "🎉 Setup Complete for: $PROJECT_NAME"
+          echo "======================================"
+          echo ""
+          echo "📋 Project Details:"
+          echo "   Name: $PROJECT_NAME"
+          echo "   Description: $PROJECT_DESCRIPTION"
+          echo "   Platform: $PLATFORM_NAME"
+          echo "   Environment: $PLATFORM_ENVIRONMENT"
+          echo "   Owner: $PLATFORM_OWNER"
+          echo ""
+          echo "🔗 Configured Integrations:"
+          echo "   ✅ GitHub: ${{ parameters.useGitHub }}"
+          echo "   ✅ Jenkins: ${{ parameters.useJenkins }}"
+          echo "   ✅ Jira: ${{ parameters.useJira }}"
+          echo "   ✅ SonarQube: ${{ parameters.useSonarQube }}"
+          echo ""
+          echo "🌍 Environment Variables Loaded:"
+          echo "   From Global Config: ${NODE_ENV:+(set)}, ${DOCKER_REGISTRY:+(set)}, ${PLATFORM_NAME:+(set)}"
+          echo "   From Action Config: ${MAVEN_OPTS:+(set)}, ${GRADLE_OPTS:+(set)}, ${NPM_CONFIG_REGISTRY:+(set)}"
+          echo "   From Integrations: ${GITHUB_TOKEN:+(set)}, ${JENKINS_API_KEY:+(set)}, ${JIRA_API_TOKEN:+(set)}"
+          echo ""
+          echo "📁 Created Files:"
+          echo "   - package.json (with environment-specific registry)"
+          echo "   - src/index.js (basic application)"
+          echo "   - README.md (with platform information)"
+          echo "   - scripts/deploy.sh (deployment automation)"
+          echo "   - .env.example (environment template)"
+          if [ "${{ parameters.useGitHub }}" = "true" ]; then
+            echo "   - .github/workflows/ci.yml (GitHub Actions)"
+          fi
+          if [ "${{ parameters.useJenkins }}" = "true" ]; then
+            echo "   - Jenkinsfile (Jenkins pipeline)"
+          fi
+          if [ "${{ parameters.useJira }}" = "true" ]; then
+            echo "   - JIRA_INTEGRATION.md (Jira documentation)"
+          fi
+          if [ "${{ parameters.useSonarQube }}" = "true" ]; then
+            echo "   - sonar-project.properties (SonarQube config)"
+          fi
+          echo ""
+          echo "🚀 Next Steps:"
+          echo "   1. Review the generated configuration files"
+          echo "   2. Customize environment variables as needed"
+          echo "   3. Run 'npm install' to install dependencies"
+          echo "   4. Run 'npm start' to start the application"
+          echo "   5. Run 'scripts/deploy.sh' to deploy to $PLATFORM_ENVIRONMENT"
+          echo ""
+          echo "💡 Environment variables from app-config.yaml are automatically"
+          echo "   available in all shell scripts - no manual configuration needed!"
+        environment:
+          PROJECT_NAME: ${{ parameters.name }}
+          PROJECT_DESCRIPTION: ${{ parameters.description }}
+
+  output:
+    links:
+      - title: Repository
+        url: https://github.com/${{ steps.setup-project-structure.output.terraformDefaultOwner }}/${{ parameters.name }}
+      - title: Jenkins Pipeline
+        url: ${{ steps.setup-jenkins-pipeline.output.jenkinsBaseUrl }}/job/${{ parameters.name }}
+        condition: ${{ parameters.useJenkins }}
+      - title: Jira Project
+        url: ${{ steps.setup-jira-integration.output.jiraBaseUrl }}/browse/${{ parameters.name }}
+        condition: ${{ parameters.useJira }}
+      - title: SonarQube Project
+        url: ${{ steps.setup-sonarqube-analysis.output.sonarqubeBaseUrl }}/dashboard?id=${{ parameters.name }}
+        condition: ${{ parameters.useSonarQube }}

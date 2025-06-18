@@ -1,0 +1,99 @@
+# Staging Environment Configuration for {{ values.component_id }}
+spring:
+  profiles:
+    active: staging
+  application:
+    name: {{ values.component_id }}
+  
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://staging-postgres.{{ values.domain | default('example.com') }}:5432/{{ values.component_id }}_staging
+    driver-class-name: org.postgresql.Driver
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      leak-detection-threshold: 60000
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          lob:
+            non_contextual_creation: true
+
+  # Cache Configuration
+  cache:
+    type: redis
+  redis:
+    host: staging-redis.{{ values.domain | default('example.com') }}
+    port: 6379
+    password: ${REDIS_PASSWORD}
+    timeout: 2000
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 5
+        min-idle: 2
+
+# Server Configuration
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+  error:
+    whitelabel:
+      enabled: false
+
+# Logging Configuration
+logging:
+  level:
+    com.{{ values.organization | lower }}.{{ values.component_id | replace('-', '') }}: INFO
+    org.springframework.security: WARN
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Management Endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# Custom Application Properties
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET}
+      expiration: 86400000
+  cors:
+    allowed-origins: "https://staging.{{ values.domain | default('example.com') }}"
+  swagger:
+    enabled: true
+  notification:
+    email:
+      enabled: true
+      smtp:
+        host: smtp.staging.{{ values.domain | default('example.com') }}
+        port: 587
+        username: ${EMAIL_USERNAME}
+        password: ${EMAIL_PASSWORD}

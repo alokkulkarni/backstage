@@ -1,0 +1,41 @@
+{
+  "id": "af5de514-fc5b-4766-a1db-c5c191fcb692",
+  "name": "Guest Deny Terraform Access",
+  "description": "Deny guest users access to all Terraform resources",
+  "resource": "terraform*",
+  "actions": [
+    "*"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "terraform",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.106Z",
+    "updatedAt": "2025-06-13T15:23:09.106Z"
+  }
+}

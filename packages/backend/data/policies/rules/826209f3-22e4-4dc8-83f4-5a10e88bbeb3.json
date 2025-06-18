@@ -1,0 +1,41 @@
+{
+  "id": "826209f3-22e4-4dc8-83f4-5a10e88bbeb3",
+  "name": "Guest Scaffolder Template Read",
+  "description": "Allow guest users to view scaffolder templates",
+  "resource": "scaffolder-template",
+  "actions": [
+    "read"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 100,
+    "category": "guest-access",
+    "tags": [
+      "guest",
+      "scaffolder",
+      "read-only"
+    ],
+    "createdAt": "2025-06-13T15:23:09.104Z",
+    "updatedAt": "2025-06-13T15:23:09.104Z"
+  }
+}

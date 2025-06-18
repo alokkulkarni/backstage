@@ -1,0 +1,329 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.name }}
+  description: ${{ values.description }}
+  annotations:
+    # Source Code Management
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+    backstage.io/source-location: url:${{ values.repoUrl }}
+    
+    # CI/CD Integration
+    jenkins.io/build-job: ${{ values.name }}-build
+    jenkins.io/release-job: ${{ values.name }}-release
+    jenkins.io/quality-job: ${{ values.name }}-quality
+    jenkins.io/server-url: ${{ values.jenkinsUrl }}
+    
+    # Documentation
+    backstage.io/techdocs-ref: dir:.
+    
+    # Container Registry
+    {% if values.enableDocker %}
+    docker.io/image-name: ${{ values.dockerRegistry }}/${{ values.dockerNamespace }}/${{ values.name }}
+    {% endif %}
+    
+    # Kubernetes Deployment
+    {% if values.enableKubernetes %}
+    kubernetes.io/deployment: ${{ values.name }}
+    kubernetes.io/namespace: ${{ values.kubernetesNamespace }}
+    {% endif %}
+    
+    # Code Quality
+    {% if values.sonarQubeUrl %}
+    sonarqube.org/project-key: ${{ values.name }}
+    {% endif %}
+    
+    # Monitoring
+    {% if values.enablePrometheus %}
+    prometheus.io/service-name: ${{ values.name }}
+    {% endif %}
+    
+    # Security
+    {% if values.enableSecurityScanning %}
+    security.backstage.io/scan-enabled: "true"
+    {% endif %}
+    
+    # Application Metadata
+    app.python.org/version: ${{ values.pythonVersion }}
+    app.python.org/framework: ${{ values.framework }}
+    app.python.org/package-manager: ${{ values.packageManager }}
+    
+  tags:
+    - python
+    - ${{ values.framework }}
+    - microservice
+    - api
+    {% if values.enableDocker %}
+    - docker
+    {% endif %}
+    {% if values.enableKubernetes %}
+    - kubernetes
+    {% endif %}
+    {% if values.includeCelery %}
+    - celery
+    - async
+    {% endif %}
+    {% if values.includeDatabase %}
+    - database
+    {% endif %}
+  
+  links:
+    - url: ${{ values.repoUrl }}
+      title: Source Code
+      icon: github
+    - url: ${{ values.jenkinsUrl }}/job/${{ values.name }}-build
+      title: Build Pipeline
+      icon: jenkins
+    - url: ${{ values.jenkinsUrl }}/job/${{ values.name }}-release
+      title: Release Pipeline
+      icon: jenkins
+    - url: ${{ values.jenkinsUrl }}/job/${{ values.name }}-quality
+      title: Quality Pipeline
+      icon: jenkins
+    {% if values.sonarQubeUrl %}
+    - url: ${{ values.sonarQubeUrl }}/dashboard?id=${{ values.name }}
+      title: Code Quality Dashboard
+      icon: sonarqube
+    {% endif %}
+    {% if values.enableDocker %}
+    - url: https://${{ values.dockerRegistry }}/repository/${{ values.dockerNamespace }}/${{ values.name }}
+      title: Container Registry
+      icon: docker
+    {% endif %}
+
+spec:
+  type: service
+  lifecycle: {{ 'experimental' if 'dev' in values.environments else 'production' }}
+  owner: ${{ values.owner }}
+  
+  # API Specifications
+  {% if values.framework in ['fastapi', 'django', 'flask'] %}
+  providesApis:
+    - ${{ values.name }}-api
+  {% endif %}
+  
+  # Dependencies
+  dependsOn:
+    {% if values.includeDatabase %}
+    - resource:${{ values.name }}-database
+    {% endif %}
+    {% if values.includeCelery %}
+    - resource:${{ values.name }}-message-queue
+    - resource:${{ values.name }}-cache
+    {% endif %}
+  
+  # System Information
+  system: ${{ values.name }}-system
+
+---
+{% if values.framework in ['fastapi', 'django', 'flask'] %}
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: ${{ values.name }}-api
+  description: ${{ values.framework | title }} API for ${{ values.name }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+    {% if values.framework == 'fastapi' %}
+    # FastAPI automatically generates OpenAPI specs
+    backstage.io/definition-at-location: url:${{ values.repoUrl }}/blob/main/openapi.json
+    {% elif values.framework == 'django' %}
+    # Django REST Framework
+    backstage.io/definition-at-location: url:${{ values.repoUrl }}/blob/main/schema.yml
+    {% elif values.framework == 'flask' %}
+    # Flask with Flask-RESTX or similar
+    backstage.io/definition-at-location: url:${{ values.repoUrl }}/blob/main/swagger.json
+    {% endif %}
+  
+  tags:
+    - api
+    - ${{ values.framework }}
+    - rest
+    {% if values.framework == 'fastapi' %}
+    - openapi
+    - async
+    {% endif %}
+  
+  links:
+    {% if values.framework == 'fastapi' %}
+    - url: https://${{ values.name }}.{{ values.environments[0] if values.environments else 'dev' }}.company.com/docs
+      title: Interactive API Documentation (Swagger UI)
+      icon: swagger
+    - url: https://${{ values.name }}.{{ values.environments[0] if values.environments else 'dev' }}.company.com/redoc
+      title: API Documentation (ReDoc)
+      icon: docs
+    {% elif values.framework == 'django' %}
+    - url: https://${{ values.name }}.{{ values.environments[0] if values.environments else 'dev' }}.company.com/api/docs/
+      title: API Documentation
+      icon: docs
+    {% elif values.framework == 'flask' %}
+    - url: https://${{ values.name }}.{{ values.environments[0] if values.environments else 'dev' }}.company.com/api/docs
+      title: API Documentation
+      icon: swagger
+    {% endif %}
+
+spec:
+  type: openapi
+  lifecycle: {{ 'experimental' if 'dev' in values.environments else 'production' }}
+  owner: ${{ values.owner }}
+  system: ${{ values.name }}-system
+  definition: |
+    openapi: 3.0.3
+    info:
+      title: ${{ values.name | title }} API
+      description: ${{ values.description }}
+      version: 1.0.0
+      contact:
+        name: ${{ values.owner }}
+      license:
+        name: MIT
+    servers:
+      {% for env in values.environments %}
+      - url: https://${{ values.name }}.{{ env }}.company.com
+        description: {{ env | title }} environment
+      {% endfor %}
+    paths:
+      ${{ values.healthCheckPath | default('/health') }}:
+        get:
+          summary: Health Check
+          description: Returns the health status of the application
+          operationId: healthCheck
+          responses:
+            '200':
+              description: Application is healthy
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum: [healthy]
+                      timestamp:
+                        type: string
+                        format: date-time
+                      version:
+                        type: string
+      {% if values.enablePrometheus %}
+      /metrics:
+        get:
+          summary: Prometheus Metrics
+          description: Returns application metrics in Prometheus format
+          operationId: getMetrics
+          responses:
+            '200':
+              description: Metrics data
+              content:
+                text/plain:
+                  schema:
+                    type: string
+      {% endif %}
+
+---
+{% endif %}
+
+{% if values.includeDatabase %}
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: ${{ values.name }}-database
+  description: Database for ${{ values.name }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  
+  tags:
+    - database
+    {% if values.framework == 'django' %}
+    - postgresql
+    {% else %}
+    - sqlite
+    - postgresql
+    {% endif %}
+
+spec:
+  type: database
+  lifecycle: {{ 'experimental' if 'dev' in values.environments else 'production' }}
+  owner: ${{ values.owner }}
+  system: ${{ values.name }}-system
+  dependencyOf:
+    - component:${{ values.name }}
+
+---
+{% endif %}
+
+{% if values.includeCelery %}
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: ${{ values.name }}-message-queue
+  description: Message queue for asynchronous task processing
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  
+  tags:
+    - message-queue
+    - rabbitmq
+    - celery
+    - async
+
+spec:
+  type: message-queue
+  lifecycle: {{ 'experimental' if 'dev' in values.environments else 'production' }}
+  owner: ${{ values.owner }}
+  system: ${{ values.name }}-system
+  dependencyOf:
+    - component:${{ values.name }}
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: ${{ values.name }}-cache
+  description: Redis cache for task results and session storage
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  
+  tags:
+    - cache
+    - redis
+    - celery
+
+spec:
+  type: cache
+  lifecycle: {{ 'experimental' if 'dev' in values.environments else 'production' }}
+  owner: ${{ values.owner }}
+  system: ${{ values.name }}-system
+  dependencyOf:
+    - component:${{ values.name }}
+
+---
+{% endif %}
+
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: ${{ values.name }}-system
+  description: System containing ${{ values.name }} and its dependencies
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+  
+  tags:
+    - system
+    - python
+    - microservices
+
+spec:
+  owner: ${{ values.owner }}
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: ${{ values.name }}-location
+  description: Location containing all entities for ${{ values.name }}
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+
+spec:
+  type: url
+  target: ${{ values.repoUrl }}/blob/main/catalog-info.yaml

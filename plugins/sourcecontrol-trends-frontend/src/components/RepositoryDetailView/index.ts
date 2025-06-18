@@ -1,0 +1,1 @@
+export { RepositoryDetailView } from './RepositoryDetailView';

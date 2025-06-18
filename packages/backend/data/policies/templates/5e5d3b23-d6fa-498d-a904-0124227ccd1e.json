@@ -1,0 +1,23 @@
+{
+  "name": "Admin Full Access",
+  "description": "Grant full administrative access",
+  "category": "admin",
+  "template": {
+    "name": "Admin Access - {{subject}}",
+    "description": "Full administrative access for {{subject}}",
+    "resource": "*",
+    "actions": [
+      "*"
+    ],
+    "effect": "allow"
+  },
+  "variables": [
+    {
+      "name": "subject",
+      "description": "User or group to grant admin access to",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "id": "5e5d3b23-d6fa-498d-a904-0124227ccd1e"
+}

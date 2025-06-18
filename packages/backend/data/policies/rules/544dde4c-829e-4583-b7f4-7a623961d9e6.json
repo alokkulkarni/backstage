@@ -1,0 +1,45 @@
+{
+  "id": "544dde4c-829e-4583-b7f4-7a623961d9e6",
+  "name": "Guest Deny Scaffolder Execution",
+  "description": "Deny guest users from executing scaffolder templates",
+  "resource": "scaffolder*",
+  "actions": [
+    "create",
+    "execute",
+    "update",
+    "delete",
+    "trigger"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "scaffolder",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.112Z",
+    "updatedAt": "2025-06-13T15:23:09.112Z"
+  }
+}

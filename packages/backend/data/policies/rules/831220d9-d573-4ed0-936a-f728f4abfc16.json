@@ -1,0 +1,41 @@
+{
+  "id": "831220d9-d573-4ed0-936a-f728f4abfc16",
+  "name": "Guest Deny Kubernetes Access",
+  "description": "Deny guest users access to Kubernetes and infrastructure management",
+  "resource": "kubernetes*",
+  "actions": [
+    "*"
+  ],
+  "effect": "deny",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 200,
+    "category": "guest-security",
+    "tags": [
+      "guest",
+      "kubernetes",
+      "security"
+    ],
+    "createdAt": "2025-06-13T15:23:09.110Z",
+    "updatedAt": "2025-06-13T15:23:09.110Z"
+  }
+}

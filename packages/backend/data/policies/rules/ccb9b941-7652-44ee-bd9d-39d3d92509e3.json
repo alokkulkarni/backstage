@@ -1,0 +1,41 @@
+{
+  "id": "ccb9b941-7652-44ee-bd9d-39d3d92509e3",
+  "name": "Guest Catalog Location Read",
+  "description": "Allow guest users to read catalog locations",
+  "resource": "catalog-location",
+  "actions": [
+    "read"
+  ],
+  "effect": "allow",
+  "subjects": [
+    {
+      "type": "user",
+      "identifier": "user:guest"
+    },
+    {
+      "type": "user",
+      "identifier": "user:default/guest"
+    }
+  ],
+  "conditions": [
+    {
+      "field": "user.identity.userEntityRef",
+      "operator": "in",
+      "value": [
+        "user:guest",
+        "user:default/guest"
+      ]
+    }
+  ],
+  "metadata": {
+    "priority": 100,
+    "category": "guest-access",
+    "tags": [
+      "guest",
+      "catalog",
+      "read-only"
+    ],
+    "createdAt": "2025-06-13T15:23:09.102Z",
+    "updatedAt": "2025-06-13T15:23:09.102Z"
+  }
+}

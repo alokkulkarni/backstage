@@ -1,0 +1,10 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: example-service
+  description: An example service to demonstrate Jira annotations
+  # Jira annotations will be added here by the scaffold action
+spec:
+  type: service
+  owner: team-a
+  lifecycle: production

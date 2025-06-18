@@ -1,0 +1,133 @@
+# Production Environment Configuration for {{ values.component_id }}
+spring:
+  profiles:
+    active: production
+  application:
+    name: {{ values.component_id }}
+  
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://postgres.{{ values.domain | default('example.com') }}:5432/{{ values.component_id }}
+    driver-class-name: org.postgresql.Driver
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      leak-detection-threshold: 60000
+      max-lifetime: 1800000
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          lob:
+            non_contextual_creation: true
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+
+  # Cache Configuration
+  cache:
+    type: redis
+  redis:
+    host: redis.{{ values.domain | default('example.com') }}
+    port: 6379
+    password: ${REDIS_PASSWORD}
+    timeout: 2000
+    lettuce:
+      pool:
+        max-active: 20
+        max-idle: 10
+        min-idle: 5
+
+# Server Configuration
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+  error:
+    whitelabel:
+      enabled: false
+  tomcat:
+    max-threads: 200
+    min-spare-threads: 10
+    accept-count: 100
+
+# Logging Configuration
+logging:
+  level:
+    com.{{ values.organization | lower }}.{{ values.component_id | replace('-', '') }}: INFO
+    org.springframework.security: WARN
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+    root: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: /app/logs/{{ values.component_id }}.log
+    max-size: 100MB
+    max-history: 30
+
+# Management Endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
+
+# Custom Application Properties
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET}
+      expiration: 86400000
+    cors:
+      allowed-origins: "https://{{ values.domain | default('example.com') }}"
+    rate-limit:
+      enabled: true
+      requests-per-minute: 1000
+  swagger:
+    enabled: false
+  notification:
+    email:
+      enabled: true
+      smtp:
+        host: smtp.{{ values.domain | default('example.com') }}
+        port: 587
+        username: ${EMAIL_USERNAME}
+        password: ${EMAIL_PASSWORD}
+        ssl:
+          enable: true
+  monitoring:
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
+      sample-rate: 0.1
+  circuit-breaker:
+    failure-rate-threshold: 50
+    wait-duration-in-open-state: 30s
+    sliding-window-size: 10

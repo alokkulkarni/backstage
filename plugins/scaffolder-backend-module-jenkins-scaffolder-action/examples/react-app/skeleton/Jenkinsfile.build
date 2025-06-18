@@ -1,0 +1,260 @@
+pipeline {
+    agent any
+    
+    environment {
+        NODE_VERSION = '18'
+        DOCKER_REGISTRY = "${params.DOCKER_REGISTRY ?: 'your-registry.com'}"
+        IMAGE_NAME = "${DOCKER_REGISTRY}/${{ values.name }}"
+        GIT_REPO_URL = "${params.GIT_REPO_URL ?: 'https://github.com/your-org/${{ values.name }}.git'}"
+        BRANCH_NAME = "${env.BRANCH_NAME ?: 'main'}"
+    }
+    
+    tools {
+        nodejs "${NODE_VERSION}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        string(name: 'DOCKER_REGISTRY', defaultValue: '${{ values.dockerRegistry }}', description: 'Docker registry URL')
+        string(name: 'GIT_REPO_URL', defaultValue: '${{ values.destination.owner }}/${{ values.destination.repo }}', description: 'Git repository URL')
+        choice(name: 'NODE_VERSION', choices: ['18', '16', '20'], description: 'Node.js version to use')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip running tests')
+        booleanParam(name: 'PUBLISH_IMAGE', defaultValue: true, description: 'Publish Docker image to registry')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🚀 Starting build for ${{ values.name }}"
+                    echo "📂 Repository: ${GIT_REPO_URL}"
+                    echo "🌿 Branch: ${BRANCH_NAME}"
+                }
+                
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "${BRANCH_NAME}"]],
+                    userRemoteConfigs: [[url: "${GIT_REPO_URL}"]]
+                ])
+                
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.BUILD_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                    env.IMAGE_TAG = "${IMAGE_NAME}:${BUILD_TAG}"
+                    env.IMAGE_LATEST = "${IMAGE_NAME}:latest"
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo "📦 Installing Node.js dependencies"
+                sh '''
+                    npm ci --prefer-offline --no-audit
+                    npm list --depth=0
+                '''
+            }
+        }
+        
+        stage('Code Quality & Security') {
+            parallel {
+                stage('Lint') {
+                    steps {
+                        echo "🔍 Running ESLint"
+                        sh 'npm run lint'
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'eslint-reports',
+                                reportFiles: 'index.html',
+                                reportName: 'ESLint Report'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Security Audit') {
+                    steps {
+                        echo "🔒 Running security audit"
+                        sh '''
+                            npm audit --audit-level=high
+                            npx audit-ci --moderate
+                        '''
+                    }
+                }
+                
+                stage('Type Check') {
+                    when {
+                        anyOf {
+                            changeset "**/*.ts"
+                            changeset "**/*.tsx"
+                        }
+                    }
+                    steps {
+                        echo "📝 Running TypeScript type check"
+                        sh 'npm run type-check'
+                    }
+                }
+            }
+        }
+        
+        stage('Test') {
+            when {
+                not { params.SKIP_TESTS }
+            }
+            steps {
+                echo "🧪 Running tests"
+                sh '''
+                    npm run test:ci
+                    npm run test:coverage
+                '''
+            }
+            post {
+                always {
+                    publishTestResults testResultsPattern: 'test-results/junit.xml'
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'coverage/lcov-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Build Application') {
+            steps {
+                echo "🏗️ Building React application"
+                sh '''
+                    npm run build
+                    ls -la build/
+                    du -sh build/
+                '''
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'build/**/*', fingerprint: true
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "🐳 Building Docker image: ${env.IMAGE_TAG}"
+                    def image = docker.build("${env.IMAGE_TAG}")
+                    
+                    echo "🏷️ Tagging image as latest"
+                    sh "docker tag ${env.IMAGE_TAG} ${env.IMAGE_LATEST}"
+                    
+                    // Security scan
+                    echo "🔒 Running security scan on Docker image"
+                    sh """
+                        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\
+                        -v \$(pwd):/tmp/.security-reports \\
+                        aquasec/trivy image --exit-code 0 --severity HIGH,CRITICAL \\
+                        --format json --output /tmp/.security-reports/trivy-report.json \\
+                        ${env.IMAGE_TAG} || true
+                    """
+                }
+            }
+        }
+        
+        stage('Publish Docker Image') {
+            when {
+                allOf {
+                    params.PUBLISH_IMAGE
+                    anyOf {
+                        branch 'main'
+                        branch 'develop'
+                        expression { return env.BRANCH_NAME.startsWith('release/') }
+                    }
+                }
+            }
+            steps {
+                script {
+                    echo "📤 Publishing Docker image to registry"
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                        sh "docker push ${env.IMAGE_TAG}"
+                        sh "docker push ${env.IMAGE_LATEST}"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Development') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                echo "🚀 Deploying to development environment"
+                sh '''
+                    echo "Image: ${IMAGE_TAG}"
+                    echo "Namespace: ${K8S_NAMESPACE}"
+                    # Add your Kubernetes deployment commands here
+                    # kubectl set image deployment/${{ values.name }} app=${IMAGE_TAG} -n ${K8S_NAMESPACE}
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🧹 Cleaning up workspace"
+            sh '''
+                docker system prune -f
+                rm -rf node_modules/.cache
+            '''
+        }
+        
+        success {
+            echo "✅ Build completed successfully!"
+            slackSend(
+                channel: '#ci-cd',
+                color: 'good',
+                message: ":white_check_mark: *${{ values.name }}* build #${env.BUILD_NUMBER} succeeded\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                        "Image: ${env.IMAGE_TAG}"
+            )
+        }
+        
+        failure {
+            echo "❌ Build failed!"
+            slackSend(
+                channel: '#ci-cd',
+                color: 'danger',
+                message: ":x: *${{ values.name }}* build #${env.BUILD_NUMBER} failed\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Commit: ${env.GIT_COMMIT_SHORT}\\n" +
+                        "Check: ${env.BUILD_URL}"
+            )
+        }
+        
+        unstable {
+            echo "⚠️ Build is unstable"
+            slackSend(
+                channel: '#ci-cd',
+                color: 'warning',
+                message: ":warning: *${{ values.name }}* build #${env.BUILD_NUMBER} is unstable\\n" +
+                        "Branch: ${env.BRANCH_NAME}\\n" +
+                        "Check: ${env.BUILD_URL}"
+            )
+        }
+    }
+}

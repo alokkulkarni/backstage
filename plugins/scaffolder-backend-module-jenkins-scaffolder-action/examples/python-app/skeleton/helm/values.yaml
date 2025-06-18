@@ -1,0 +1,389 @@
+# Default values for {{ values.component_id }}.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 2
+
+image:
+  repository: "{{ values.docker_registry }}/{{ values.organization }}/{{ values.component_id }}"
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/rate-limit: "200"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+  hosts:
+    - host: "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: "{{ values.component_id }}-tls"
+      hosts:
+        - "{{ values.component_id }}.{{ values.domain | default('example.com') }}"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - {{ values.component_id }}
+        topologyKey: kubernetes.io/hostname
+
+# Python framework configuration
+framework: "{{ values.python_framework | default('fastapi') }}"
+
+# Environment variables
+env:
+  - name: PYTHONPATH
+    value: "/app"
+  - name: PYTHONUNBUFFERED
+    value: "1"
+  - name: ENVIRONMENT
+    value: "production"
+  - name: PORT
+    value: "8000"
+  - name: HOST
+    value: "0.0.0.0"
+  - name: LOG_LEVEL
+    value: "info"
+  - name: WORKERS
+    value: "2"
+
+# Database configuration
+database:
+  host: "{{ values.component_id }}-postgres"
+  port: "5432"
+  name: "{{ values.component_id }}"
+  username: "{{ values.component_id }}"
+  secretName: "{{ values.component_id }}-db-secret"
+
+# Redis configuration (for caching and message queue)
+redis:
+  enabled: true
+  host: "{{ values.component_id }}-redis"
+  port: "6379"
+  secretName: "{{ values.component_id }}-redis-secret"
+
+# Message Queue configuration (RabbitMQ)
+messageQueue:
+  enabled: false
+  host: "{{ values.component_id }}-rabbitmq"
+  port: "5672"
+  secretName: "{{ values.component_id }}-mq-secret"
+
+# ConfigMap configuration
+configMap:
+  data:
+    # FastAPI configuration
+    fastapi.ini: |
+      [app]
+      title = {{ values.component_id }}
+      description = {{ values.description | default("Python API") }}
+      version = 1.0.0
+      debug = false
+      
+      [server]
+      host = 0.0.0.0
+      port = 8000
+      workers = 2
+      worker_class = uvicorn.workers.UvicornWorker
+      
+      [database]
+      url = postgresql+asyncpg://${DATABASE_USERNAME}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}
+      pool_size = 10
+      max_overflow = 20
+      pool_timeout = 30
+      
+      [redis]
+      url = redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0
+      
+      [logging]
+      level = info
+      format = %(asctime)s - %(name)s - %(levelname)s - %(message)s
+    
+    # Django settings (if Django is selected)
+    django_settings.py: |
+      import os
+      from pathlib import Path
+      
+      BASE_DIR = Path(__file__).resolve().parent.parent
+      
+      SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'change-me-in-production')
+      DEBUG = False
+      ALLOWED_HOSTS = ['*']
+      
+      INSTALLED_APPS = [
+          'django.contrib.admin',
+          'django.contrib.auth',
+          'django.contrib.contenttypes',
+          'django.contrib.sessions',
+          'django.contrib.messages',
+          'django.contrib.staticfiles',
+          'rest_framework',
+          '{{ values.component_id }}',
+      ]
+      
+      MIDDLEWARE = [
+          'django.middleware.security.SecurityMiddleware',
+          'django.contrib.sessions.middleware.SessionMiddleware',
+          'django.middleware.common.CommonMiddleware',
+          'django.middleware.csrf.CsrfViewMiddleware',
+          'django.contrib.auth.middleware.AuthenticationMiddleware',
+          'django.contrib.messages.middleware.MessageMiddleware',
+          'django.middleware.clickjacking.XFrameOptionsMiddleware',
+      ]
+      
+      ROOT_URLCONF = '{{ values.component_id }}.urls'
+      
+      DATABASES = {
+          'default': {
+              'ENGINE': 'django.db.backends.postgresql',
+              'NAME': os.environ.get('DATABASE_NAME'),
+              'USER': os.environ.get('DATABASE_USERNAME'),
+              'PASSWORD': os.environ.get('DATABASE_PASSWORD'),
+              'HOST': os.environ.get('DATABASE_HOST'),
+              'PORT': os.environ.get('DATABASE_PORT'),
+          }
+      }
+      
+      CACHES = {
+          'default': {
+              'BACKEND': 'django_redis.cache.RedisCache',
+              'LOCATION': f"redis://:{os.environ.get('REDIS_PASSWORD')}@{os.environ.get('REDIS_HOST')}:{os.environ.get('REDIS_PORT')}/1",
+              'OPTIONS': {
+                  'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+              }
+          }
+      }
+      
+      LOGGING = {
+          'version': 1,
+          'disable_existing_loggers': False,
+          'formatters': {
+              'verbose': {
+                  'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+                  'style': '{',
+              },
+          },
+          'handlers': {
+              'console': {
+                  'class': 'logging.StreamHandler',
+                  'formatter': 'verbose',
+              },
+          },
+          'root': {
+              'handlers': ['console'],
+              'level': 'INFO',
+          },
+      }
+    
+    # Flask configuration (if Flask is selected)
+    flask_config.py: |
+      import os
+      
+      class Config:
+          SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'change-me-in-production')
+          
+          # Database configuration
+          SQLALCHEMY_DATABASE_URI = (
+              f"postgresql://{os.environ.get('DATABASE_USERNAME')}:"
+              f"{os.environ.get('DATABASE_PASSWORD')}@"
+              f"{os.environ.get('DATABASE_HOST')}:"
+              f"{os.environ.get('DATABASE_PORT')}/"
+              f"{os.environ.get('DATABASE_NAME')}"
+          )
+          SQLALCHEMY_TRACK_MODIFICATIONS = False
+          SQLALCHEMY_ENGINE_OPTIONS = {
+              'pool_size': 10,
+              'pool_timeout': 20,
+              'pool_recycle': -1,
+              'pool_pre_ping': True
+          }
+          
+          # Redis configuration
+          REDIS_URL = (
+              f"redis://:{os.environ.get('REDIS_PASSWORD')}@"
+              f"{os.environ.get('REDIS_HOST')}:"
+              f"{os.environ.get('REDIS_PORT')}/0"
+          )
+          
+          # Logging
+          LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+
+# Probes configuration
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 30
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+      ports:
+      - protocol: TCP
+        port: 8000
+    - from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-postgres
+      ports:
+      - protocol: TCP
+        port: 5432
+    - from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-redis
+      ports:
+      - protocol: TCP
+        port: 6379
+  egress:
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-postgres
+      ports:
+      - protocol: TCP
+        port: 5432
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ values.component_id }}-redis
+      ports:
+      - protocol: TCP
+        port: 6379
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 80
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Service Monitor for Prometheus
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  interval: 30s
+  path: /metrics
+  labels:
+    release: prometheus
+
+# Secrets
+secrets:
+  database:
+    username: "{{ values.component_id }}"
+    password: "changeme"
+  redis:
+    password: "changeme"
+  messageQueue:
+    username: "{{ values.component_id }}"
+    password: "changeme"
+  app:
+    secretKey: "changeme"

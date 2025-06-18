@@ -1,0 +1,978 @@
+#!/usr/bin/env groovy
+
+/**
+ * Jenkins Quality Analysis Pipeline for Python Application
+ * 
+ * This pipeline provides comprehensive code quality analysis including:
+ * - Static code analysis (flake8, pylint, mypy)
+ * - Code formatting validation (black, isort)
+ * - Security vulnerability scanning (bandit, safety, semgrep)
+ * - Documentation analysis (pydocstyle)
+ * - Test coverage analysis and mutation testing
+ * - Dependency analysis and license compliance
+ * - Technical debt assessment
+ * - SonarQube integration for centralized quality metrics
+ */
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: python
+    image: python:${{ values.pythonVersion }}-slim
+    command:
+    - cat
+    tty: true
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+  - name: sonar-scanner
+    image: sonarsource/sonar-scanner-cli:latest
+    command:
+    - cat
+    tty: true
+  - name: security-tools
+    image: returntocorp/semgrep:latest
+    command:
+    - cat
+    tty: true
+"""
+        }
+    }
+
+    triggers {
+        cron('H 2 * * *')  // Daily at 2 AM
+        pollSCM('H/30 * * * *')  // Every 30 minutes
+    }
+
+    options {
+        buildDiscarder(logRotator(
+            numToKeepStr: '30',
+            daysToKeepStr: '30'
+        ))
+        timeout(time: 2, unit: 'HOURS')
+        retry(1)
+        skipStagesAfterUnstable()
+        parallelsAlwaysFailFast()
+    }
+
+    environment {
+        // Application Configuration
+        APP_NAME = '${{ values.name }}'
+        PYTHON_VERSION = '${{ values.pythonVersion }}'
+        FRAMEWORK = '${{ values.framework }}'
+        PACKAGE_MANAGER = '${{ values.packageManager | default("pip") }}'
+        
+        // Build Information
+        BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        QUALITY_BUILD_TAG = "quality-${env.BUILD_NUMBER}"
+        GIT_COMMIT_SHORT = "${env.GIT_COMMIT?.take(8) ?: 'unknown'}"
+        
+        // Quality Configuration
+        TEST_COVERAGE_THRESHOLD = '${{ values.testCoverage | default(80) }}'
+        QUALITY_GATE_COVERAGE = '80'
+        QUALITY_GATE_DUPLICATED_LINES = '3'
+        QUALITY_GATE_MAINTAINABILITY_RATING = 'A'
+        QUALITY_GATE_RELIABILITY_RATING = 'A'
+        QUALITY_GATE_SECURITY_RATING = 'A'
+        
+        // SonarQube Configuration
+        {% if values.sonarQubeUrl %}
+        SONARQUBE_URL = '${{ values.sonarQubeUrl }}'
+        SONARQUBE_TOKEN = credentials('${{ values.sonarQubeToken | default("sonarqube-token") }}')
+        SONAR_PROJECT_KEY = '${APP_NAME}'
+        SONAR_PROJECT_NAME = '${APP_NAME}'
+        {% endif %}
+        
+        // Security Configuration
+        {% if values.enableSecurityScanning %}
+        ENABLE_SECURITY_SCAN = 'true'
+        SECURITY_SCAN_FORMAT = 'json'
+        {% endif %}
+        
+        // Paths and Directories
+        WORKSPACE_DIR = "${env.WORKSPACE}"
+        VENV_DIR = "${env.WORKSPACE}/.venv"
+        REPORTS_DIR = "${env.WORKSPACE}/quality-reports"
+        COVERAGE_DIR = "${env.WORKSPACE}/coverage"
+        SECURITY_DIR = "${env.WORKSPACE}/security-reports"
+    }
+
+    stages {
+        stage('Quality Analysis Preparation') {
+            steps {
+                script {
+                    sh """
+                        echo "🔍 Starting comprehensive quality analysis for ${APP_NAME}"
+                        echo "Python Version: ${PYTHON_VERSION}"
+                        echo "Framework: ${FRAMEWORK}"
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        echo "Coverage Threshold: ${TEST_COVERAGE_THRESHOLD}%"
+                        
+                        # Clean and create directories
+                        rm -rf ${REPORTS_DIR} ${COVERAGE_DIR} ${SECURITY_DIR} ${VENV_DIR}
+                        mkdir -p ${REPORTS_DIR} ${COVERAGE_DIR} ${SECURITY_DIR}
+                        
+                        # Create quality analysis manifest
+                        cat > quality-manifest.json << EOF
+{
+    "analysis": {
+        "timestamp": "\$(date -Iseconds)",
+        "application": "${APP_NAME}",
+        "pythonVersion": "${PYTHON_VERSION}",
+        "framework": "${FRAMEWORK}",
+        "buildNumber": "${BUILD_NUMBER}",
+        "gitCommit": "${GIT_COMMIT_SHORT}",
+        "coverageThreshold": ${TEST_COVERAGE_THRESHOLD},
+        "enableSecurity": ${ENABLE_SECURITY_SCAN}
+    },
+    "tools": {
+        "staticAnalysis": ["flake8", "pylint", "mypy"],
+        "formatting": ["black", "isort"],
+        "security": ["bandit", "safety", "semgrep"],
+        "documentation": ["pydocstyle"],
+        "testing": ["pytest", "mutmut"],
+        "dependencies": ["pip-audit", "pipdeptree"]
+    }
+}
+EOF
+                    """
+                }
+            }
+        }
+
+        stage('Environment Setup') {
+            steps {
+                container('python') {
+                    script {
+                        sh """
+                            echo "🐍 Setting up Python quality analysis environment"
+                            
+                            # Update system packages
+                            apt-get update && apt-get install -y \\
+                                build-essential \\
+                                curl \\
+                                git \\
+                                jq \\
+                                graphviz \\
+                                libpq-dev \\
+                                default-libmysqlclient-dev
+                            
+                            # Setup Python environment
+                            python --version
+                            pip --version
+                            python -m pip install --upgrade pip setuptools wheel
+                        """
+                        
+                        // Setup package manager specific environment
+                        if (env.PACKAGE_MANAGER == 'poetry') {
+                            sh """
+                                pip install poetry
+                                poetry config virtualenvs.create true
+                                poetry config virtualenvs.in-project true
+                                poetry install --with dev
+                            """
+                        } else if (env.PACKAGE_MANAGER == 'pipenv') {
+                            sh """
+                                pip install pipenv
+                                export PIPENV_VENV_IN_PROJECT=1
+                                pipenv install --dev
+                            """
+                        } else {
+                            sh """
+                                python -m venv ${VENV_DIR}
+                                . ${VENV_DIR}/bin/activate
+                                
+                                # Install dependencies
+                                if [ -f "requirements.txt" ]; then
+                                    pip install -r requirements.txt
+                                fi
+                                if [ -f "requirements-dev.txt" ]; then
+                                    pip install -r requirements-dev.txt
+                                fi
+                                if [ -f "requirements-test.txt" ]; then
+                                    pip install -r requirements-test.txt
+                                fi
+                            """
+                        }
+                        
+                        // Install quality analysis tools
+                        sh """
+                            ${getActivationCommand()}
+                            
+                            # Install comprehensive quality tools
+                            pip install \\
+                                flake8 \\
+                                flake8-bugbear \\
+                                flake8-docstrings \\
+                                flake8-import-order \\
+                                flake8-annotations \\
+                                pylint \\
+                                mypy \\
+                                black \\
+                                isort \\
+                                bandit \\
+                                safety \\
+                                pydocstyle \\
+                                radon \\
+                                xenon \\
+                                vulture \\
+                                pytest \\
+                                pytest-cov \\
+                                pytest-xdist \\
+                                pytest-html \\
+                                pytest-json-report \\
+                                mutmut \\
+                                pip-audit \\
+                                pipdeptree \\
+                                licensecheck
+                            
+                            pip list > ${REPORTS_DIR}/installed-packages.txt
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Static Code Analysis') {
+            parallel {
+                stage('Flake8 Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔍 Running Flake8 static analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Configure flake8
+                                    cat > .flake8 << 'EOF'
+[flake8]
+max-line-length = 88
+extend-ignore = E203, W503
+exclude = .git,__pycache__,.venv,build,dist,*.egg-info
+max-complexity = 10
+import-order-style = google
+application-import-names = ${APP_NAME}
+docstring-convention = google
+EOF
+                                    
+                                    # Run flake8 analysis
+                                    flake8 --format=pylint --output-file=${REPORTS_DIR}/flake8-report.txt . || true
+                                    flake8 --format=json --output-file=${REPORTS_DIR}/flake8-report.json . || true
+                                    flake8 --statistics --tee --output-file=${REPORTS_DIR}/flake8-stats.txt . || true
+                                    
+                                    # Generate HTML report
+                                    flake8 --format=html --htmldir=${REPORTS_DIR}/flake8-html . || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'quality-reports/flake8-html',
+                                reportFiles: 'index.html',
+                                reportName: 'Flake8 Analysis Report',
+                                reportTitles: 'Code Style Analysis'
+                            ])
+                        }
+                    }
+                }
+
+                stage('Pylint Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔍 Running Pylint static analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Run pylint analysis
+                                    pylint --output-format=text --reports=yes . > ${REPORTS_DIR}/pylint-report.txt || true
+                                    pylint --output-format=json . > ${REPORTS_DIR}/pylint-report.json || true
+                                    pylint --output-format=colorized . > ${REPORTS_DIR}/pylint-colorized.txt || true
+                                    
+                                    # Generate HTML report
+                                    pylint --output-format=html . > ${REPORTS_DIR}/pylint-report.html || true
+                                    
+                                    # Extract score
+                                    PYLINT_SCORE=\$(pylint . 2>/dev/null | grep "Your code has been rated" | sed 's/.*rated at \\([0-9.]*\\).*/\\1/' || echo "0")
+                                    echo "Pylint Score: \$PYLINT_SCORE" > ${REPORTS_DIR}/pylint-score.txt
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'quality-reports',
+                                reportFiles: 'pylint-report.html',
+                                reportName: 'Pylint Analysis Report',
+                                reportTitles: 'Static Code Analysis'
+                            ])
+                        }
+                    }
+                }
+
+                {% if values.includeTyping %}
+                stage('MyPy Type Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔍 Running MyPy type analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Create mypy configuration
+                                    cat > mypy.ini << 'EOF'
+[mypy]
+python_version = ${PYTHON_VERSION}
+warn_return_any = True
+warn_unused_configs = True
+disallow_untyped_defs = True
+disallow_incomplete_defs = True
+check_untyped_defs = True
+disallow_untyped_decorators = True
+no_implicit_optional = True
+warn_redundant_casts = True
+warn_unused_ignores = True
+warn_no_return = True
+warn_unreachable = True
+strict_equality = True
+EOF
+                                    
+                                    # Run mypy analysis
+                                    mypy --html-report ${REPORTS_DIR}/mypy-html . || true
+                                    mypy --cobertura-xml-report ${REPORTS_DIR} . || true
+                                    mypy --txt-report ${REPORTS_DIR} . || true
+                                    mypy --json-report ${REPORTS_DIR}/mypy-json . || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'quality-reports/mypy-html',
+                                reportFiles: 'index.html',
+                                reportName: 'MyPy Type Analysis Report',
+                                reportTitles: 'Static Type Checking'
+                            ])
+                        }
+                    }
+                }
+                {% endif %}
+
+                stage('Code Complexity Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔍 Running code complexity analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Radon complexity analysis
+                                    radon cc . --json > ${REPORTS_DIR}/radon-complexity.json || true
+                                    radon cc . --show-complexity > ${REPORTS_DIR}/radon-complexity.txt || true
+                                    radon mi . --json > ${REPORTS_DIR}/radon-maintainability.json || true
+                                    radon mi . --show > ${REPORTS_DIR}/radon-maintainability.txt || true
+                                    
+                                    # Xenon complexity check
+                                    xenon --max-absolute A --max-modules A --max-average A . > ${REPORTS_DIR}/xenon-report.txt || true
+                                    
+                                    # Halstead metrics
+                                    radon hal . --json > ${REPORTS_DIR}/radon-halstead.json || true
+                                    
+                                    # Raw metrics
+                                    radon raw . --json > ${REPORTS_DIR}/radon-raw.json || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Dead Code Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔍 Running dead code analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Vulture dead code analysis
+                                    vulture . --json > ${REPORTS_DIR}/vulture-report.json || true
+                                    vulture . > ${REPORTS_DIR}/vulture-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Code Formatting Validation') {
+            parallel {
+                stage('Black Formatting Check') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🎨 Checking code formatting with Black"
+                                    ${getActivationCommand()}
+                                    
+                                    # Check black formatting
+                                    black --check --diff --color . > ${REPORTS_DIR}/black-check.txt || true
+                                    
+                                    # Generate what would be changed
+                                    black --diff --color . > ${REPORTS_DIR}/black-diff.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Import Sorting Check') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "📦 Checking import sorting with isort"
+                                    ${getActivationCommand()}
+                                    
+                                    # Check isort
+                                    isort --check-only --diff --color . > ${REPORTS_DIR}/isort-check.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Documentation Style Check') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "📚 Checking documentation style"
+                                    ${getActivationCommand()}
+                                    
+                                    # pydocstyle check
+                                    pydocstyle . > ${REPORTS_DIR}/pydocstyle-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Security Analysis') {
+            parallel {
+                {% if values.enableSecurityScanning %}
+                stage('Bandit Security Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔒 Running Bandit security analysis"
+                                    ${getActivationCommand()}
+                                    
+                                    # Run bandit security scan
+                                    bandit -r . -f json -o ${SECURITY_DIR}/bandit-report.json || true
+                                    bandit -r . -f html -o ${SECURITY_DIR}/bandit-report.html || true
+                                    bandit -r . -f txt -o ${SECURITY_DIR}/bandit-report.txt || true
+                                    bandit -r . -f csv -o ${SECURITY_DIR}/bandit-report.csv || true
+                                """
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'security-reports',
+                                reportFiles: 'bandit-report.html',
+                                reportName: 'Bandit Security Report',
+                                reportTitles: 'Security Vulnerability Analysis'
+                            ])
+                        }
+                    }
+                }
+
+                stage('Safety Dependency Check') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔒 Running Safety dependency vulnerability check"
+                                    ${getActivationCommand()}
+                                    
+                                    # Run safety check
+                                    safety check --json --output ${SECURITY_DIR}/safety-report.json || true
+                                    safety check --output ${SECURITY_DIR}/safety-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Pip Audit Check') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "🔒 Running pip-audit security check"
+                                    ${getActivationCommand()}
+                                    
+                                    # Run pip-audit
+                                    pip-audit --format=json --output=${SECURITY_DIR}/pip-audit-report.json || true
+                                    pip-audit --format=cyclonedx-json --output=${SECURITY_DIR}/pip-audit-sbom.json || true
+                                    pip-audit > ${SECURITY_DIR}/pip-audit-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('Semgrep Analysis') {
+                    steps {
+                        container('security-tools') {
+                            script {
+                                sh """
+                                    echo "🔒 Running Semgrep security analysis"
+                                    
+                                    # Run semgrep with multiple rulesets
+                                    semgrep --config=auto --json --output=${SECURITY_DIR}/semgrep-auto.json . || true
+                                    semgrep --config=p/python --json --output=${SECURITY_DIR}/semgrep-python.json . || true
+                                    semgrep --config=p/security-audit --json --output=${SECURITY_DIR}/semgrep-security.json . || true
+                                    semgrep --config=p/owasp-top-ten --json --output=${SECURITY_DIR}/semgrep-owasp.json . || true
+                                    
+                                    # Generate text reports
+                                    semgrep --config=auto . > ${SECURITY_DIR}/semgrep-report.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+                {% endif %}
+            }
+        }
+
+        stage('Dependency Analysis') {
+            parallel {
+                stage('Dependency Tree Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "📦 Analyzing dependency tree"
+                                    ${getActivationCommand()}
+                                    
+                                    # Generate dependency tree
+                                    pipdeptree --json > ${REPORTS_DIR}/dependency-tree.json || true
+                                    pipdeptree > ${REPORTS_DIR}/dependency-tree.txt || true
+                                    pipdeptree --graph-output png > ${REPORTS_DIR}/dependency-graph.png || true
+                                    
+                                    # Find potential dependency conflicts
+                                    pipdeptree --warn conflict > ${REPORTS_DIR}/dependency-conflicts.txt || true
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('License Analysis') {
+                    steps {
+                        container('python') {
+                            script {
+                                sh """
+                                    echo "⚖️ Analyzing package licenses"
+                                    ${getActivationCommand()}
+                                    
+                                    # Check licenses
+                                    pip-licenses --format=json --output-file=${REPORTS_DIR}/licenses.json || true
+                                    pip-licenses --format=csv --output-file=${REPORTS_DIR}/licenses.csv || true
+                                    pip-licenses > ${REPORTS_DIR}/licenses.txt || true
+                                    
+                                    # Check for problematic licenses
+                                    pip-licenses --format=json | jq '.[] | select(.License | contains("GPL"))' > ${REPORTS_DIR}/gpl-licenses.json || true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Test Coverage Analysis') {
+            steps {
+                container('python') {
+                    script {
+                        sh """
+                            echo "🧪 Running comprehensive test coverage analysis"
+                            ${getActivationCommand()}
+                            
+                            # Run tests with coverage
+                            pytest \\
+                                --cov=. \\
+                                --cov-report=html:${COVERAGE_DIR}/html \\
+                                --cov-report=xml:${COVERAGE_DIR}/coverage.xml \\
+                                --cov-report=json:${COVERAGE_DIR}/coverage.json \\
+                                --cov-report=term \\
+                                --cov-report=term-missing \\
+                                --cov-fail-under=${TEST_COVERAGE_THRESHOLD} \\
+                                --junitxml=${REPORTS_DIR}/pytest-results.xml \\
+                                --html=${REPORTS_DIR}/pytest-report.html \\
+                                --self-contained-html \\
+                                --json-report --json-report-file=${REPORTS_DIR}/pytest-report.json \\
+                                -v || true
+                            
+                            # Generate coverage badge
+                            COVERAGE_PERCENT=\$(python -c "
+import json
+with open('${COVERAGE_DIR}/coverage.json') as f:
+    data = json.load(f)
+    print(f\"{data['totals']['percent_covered']:.1f}\")
+" || echo "0")
+                            
+                            echo "Coverage: \$COVERAGE_PERCENT%" > ${COVERAGE_DIR}/coverage-badge.txt
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'quality-reports/pytest-results.xml'
+                    
+                    // Publish coverage report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'coverage/html',
+                        reportFiles: 'index.html',
+                        reportName: 'Test Coverage Report',
+                        reportTitles: 'Code Coverage Analysis'
+                    ])
+                    
+                    // Publish test report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'quality-reports',
+                        reportFiles: 'pytest-report.html',
+                        reportName: 'Test Execution Report',
+                        reportTitles: 'Unit Test Results'
+                    ])
+                }
+            }
+        }
+
+        stage('Mutation Testing') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    expression { params.RUN_MUTATION_TESTS == true }
+                }
+            }
+            steps {
+                container('python') {
+                    script {
+                        sh """
+                            echo "🧬 Running mutation testing"
+                            ${getActivationCommand()}
+                            
+                            # Run mutation testing (limited to avoid long execution)
+                            timeout 30m mutmut run --paths-to-mutate=. --tests-dir=tests || true
+                            
+                            # Generate mutation report
+                            mutmut html --directory=${REPORTS_DIR}/mutation || true
+                            mutmut json > ${REPORTS_DIR}/mutation.json || true
+                            mutmut show > ${REPORTS_DIR}/mutation.txt || true
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'quality-reports/mutation',
+                        reportFiles: 'index.html',
+                        reportName: 'Mutation Testing Report',
+                        reportTitles: 'Test Quality Analysis'
+                    ])
+                }
+            }
+        }
+
+        {% if values.sonarQubeUrl %}
+        stage('SonarQube Quality Gate') {
+            steps {
+                container('sonar-scanner') {
+                    script {
+                        sh """
+                            echo "📊 Running SonarQube analysis and quality gate"
+                            
+                            # Run SonarQube analysis
+                            sonar-scanner \\
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \\
+                                -Dsonar.projectName="${SONAR_PROJECT_NAME}" \\
+                                -Dsonar.projectVersion=${BUILD_NUMBER} \\
+                                -Dsonar.sources=. \\
+                                -Dsonar.exclusions="**/venv/**,**/.venv/**,**/tests/**,**/test/**,**/__pycache__/**,**/migrations/**" \\
+                                -Dsonar.python.coverage.reportPaths=${COVERAGE_DIR}/coverage.xml \\
+                                -Dsonar.python.xunit.reportPath=${REPORTS_DIR}/pytest-results.xml \\
+                                -Dsonar.python.pylint.reportPaths=${REPORTS_DIR}/pylint-report.txt \\
+                                -Dsonar.python.flake8.reportPaths=${REPORTS_DIR}/flake8-report.txt \\
+                                -Dsonar.python.bandit.reportPaths=${SECURITY_DIR}/bandit-report.json \\
+                                -Dsonar.host.url=${SONARQUBE_URL} \\
+                                -Dsonar.login=${SONARQUBE_TOKEN} \\
+                                -Dsonar.qualitygate.wait=true \\
+                                -Dsonar.qualitygate.timeout=300
+                        """
+                    }
+                }
+            }
+        }
+        {% endif %}
+
+        stage('Quality Report Generation') {
+            steps {
+                container('python') {
+                    script {
+                        sh """
+                            echo "📋 Generating comprehensive quality report"
+                            ${getActivationCommand()}
+                            
+                            # Install additional reporting tools
+                            pip install jinja2 matplotlib seaborn
+                            
+                            # Create comprehensive quality report
+                            python3 << 'EOF'
+import json
+import os
+from datetime import datetime
+
+def generate_quality_summary():
+    summary = {
+        "analysis_date": datetime.now().isoformat(),
+        "application": "${APP_NAME}",
+        "build_number": "${BUILD_NUMBER}",
+        "git_commit": "${GIT_COMMIT_SHORT}",
+        "quality_metrics": {},
+        "security_findings": {},
+        "recommendations": []
+    }
+    
+    # Parse coverage data
+    try:
+        with open("${COVERAGE_DIR}/coverage.json") as f:
+            coverage_data = json.load(f)
+            summary["quality_metrics"]["test_coverage"] = {
+                "percentage": coverage_data["totals"]["percent_covered"],
+                "lines_covered": coverage_data["totals"]["covered_lines"],
+                "lines_total": coverage_data["totals"]["num_statements"],
+                "threshold": ${TEST_COVERAGE_THRESHOLD},
+                "status": "PASS" if coverage_data["totals"]["percent_covered"] >= ${TEST_COVERAGE_THRESHOLD} else "FAIL"
+            }
+    except:
+        summary["quality_metrics"]["test_coverage"] = {"status": "ERROR"}
+    
+    # Parse security findings
+    security_files = [
+        "${SECURITY_DIR}/bandit-report.json",
+        "${SECURITY_DIR}/safety-report.json",
+        "${SECURITY_DIR}/pip-audit-report.json"
+    ]
+    
+    total_security_issues = 0
+    for file in security_files:
+        try:
+            if os.path.exists(file):
+                with open(file) as f:
+                    data = json.load(f)
+                    # Count issues based on tool format
+                    if "bandit" in file:
+                        total_security_issues += len(data.get("results", []))
+                    elif "safety" in file:
+                        total_security_issues += len(data.get("vulnerabilities", []))
+                    elif "pip-audit" in file:
+                        total_security_issues += len(data.get("vulnerabilities", []))
+        except:
+            pass
+    
+    summary["security_findings"]["total_issues"] = total_security_issues
+    summary["security_findings"]["status"] = "PASS" if total_security_issues == 0 else "REVIEW_REQUIRED"
+    
+    # Generate recommendations
+    if summary["quality_metrics"]["test_coverage"]["status"] == "FAIL":
+        summary["recommendations"].append(f"Increase test coverage to meet {TEST_COVERAGE_THRESHOLD}% threshold")
+    
+    if total_security_issues > 0:
+        summary["recommendations"].append(f"Review and address {total_security_issues} security findings")
+    
+    # Save summary
+    with open("${REPORTS_DIR}/quality-summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    
+    print(f"Quality Analysis Summary Generated")
+    print(f"Test Coverage: {summary['quality_metrics']['test_coverage'].get('percentage', 'N/A')}%")
+    print(f"Security Issues: {total_security_issues}")
+    print(f"Overall Status: {'PASS' if total_security_issues == 0 and summary['quality_metrics']['test_coverage']['status'] == 'PASS' else 'REVIEW_REQUIRED'}")
+
+generate_quality_summary()
+EOF
+                            
+                            # Create quality dashboard HTML
+                            cat > ${REPORTS_DIR}/quality-dashboard.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Quality Analysis Dashboard - ${APP_NAME}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background-color: #f0f0f0; padding: 20px; border-radius: 5px; }
+        .metric { display: inline-block; margin: 10px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .pass { border-color: #4CAF50; background-color: #f1f8e9; }
+        .fail { border-color: #f44336; background-color: #ffebee; }
+        .warning { border-color: #ff9800; background-color: #fff3e0; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Quality Analysis Dashboard</h1>
+        <p>Application: <strong>${APP_NAME}</strong></p>
+        <p>Build: <strong>${BUILD_NUMBER}</strong></p>
+        <p>Date: <strong>\$(date)</strong></p>
+    </div>
+    
+    <h2>Quality Metrics</h2>
+    <div id="metrics">
+        <!-- Metrics will be populated by JavaScript -->
+    </div>
+    
+    <h2>Available Reports</h2>
+    <ul>
+        <li><a href="flake8-html/index.html">Flake8 Style Analysis</a></li>
+        <li><a href="pylint-report.html">Pylint Static Analysis</a></li>
+        <li><a href="../coverage/html/index.html">Test Coverage Report</a></li>
+        <li><a href="pytest-report.html">Test Execution Report</a></li>
+        <li><a href="../security-reports/bandit-report.html">Security Analysis</a></li>
+    </ul>
+</body>
+</html>
+EOF
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'quality-reports',
+                        reportFiles: 'quality-dashboard.html',
+                        reportName: 'Quality Analysis Dashboard',
+                        reportTitles: 'Comprehensive Quality Report'
+                    ])
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Archive all reports
+                archiveArtifacts artifacts: 'quality-reports/**/*', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'coverage/**/*', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'security-reports/**/*', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'quality-manifest.json', allowEmptyArchive: true
+                
+                // Generate build summary
+                sh """
+                    echo "📋 Quality Analysis Summary for ${APP_NAME}" > quality-build-summary.txt
+                    echo "=================================================" >> quality-build-summary.txt
+                    echo "Build Number: ${BUILD_NUMBER}" >> quality-build-summary.txt
+                    echo "Git Commit: ${GIT_COMMIT_SHORT}" >> quality-build-summary.txt
+                    echo "Analysis Date: \$(date)" >> quality-build-summary.txt
+                    echo "Python Version: ${PYTHON_VERSION}" >> quality-build-summary.txt
+                    echo "Framework: ${FRAMEWORK}" >> quality-build-summary.txt
+                    echo "Quality Status: \${currentBuild.currentResult}" >> quality-build-summary.txt
+                    echo "Analysis Duration: \${currentBuild.duration}ms" >> quality-build-summary.txt
+                    echo "Build URL: ${env.BUILD_URL}" >> quality-build-summary.txt
+                """
+                
+                archiveArtifacts artifacts: 'quality-build-summary.txt', allowEmptyArchive: true
+            }
+        }
+        
+        success {
+            script {
+                echo "✅ Quality analysis completed successfully!"
+                // Send success notifications
+            }
+        }
+        
+        failure {
+            script {
+                echo "❌ Quality analysis failed!"
+                // Send failure notifications
+            }
+        }
+        
+        unstable {
+            script {
+                echo "⚠️ Quality analysis completed with warnings!"
+            }
+        }
+        
+        cleanup {
+            container('python') {
+                sh """
+                    echo "🧹 Cleaning up quality analysis environment"
+                    rm -rf ${VENV_DIR} .pytest_cache __pycache__ *.egg-info .coverage .mutmut-cache
+                """
+            }
+        }
+    }
+}
+
+/**
+ * Get the appropriate activation command based on package manager
+ */
+def getActivationCommand() {
+    if (env.PACKAGE_MANAGER == 'poetry') {
+        return 'poetry shell &&'
+    } else if (env.PACKAGE_MANAGER == 'pipenv') {
+        return 'pipenv shell &&'
+    } else {
+        return ". ${env.VENV_DIR}/bin/activate &&"
+    }
+}
