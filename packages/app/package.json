@@ -64,7 +64,7 @@
     "@roadiehq/backstage-plugin-launchdarkly": "^0.0.11",
     "react": "^18.0.2",
     "react-dom": "^18.0.2",
-    "react-router": "^6.3.0",
+    "react-router": "^6.30.2",
     "react-router-dom": "^6.3.0"
   },
   "devDependencies": {
